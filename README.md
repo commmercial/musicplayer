@@ -6,7 +6,3 @@ The setup automatically downloads the .NET SDK version selected by global.json w
 
 Discord activity
 Open Discord Desktop, enable Show what I’m listening to on Discord in Risk settings, and play a song. Risk sends the song title, artist, cover art, and playback timestamps to the running Discord desktop client over its local Rich Presence connection; no browser authorization or account token is required. Use Connect to Discord to check that the desktop client is reachable.
-
-Notes
-Music availability depends on the source service and its access restrictions.
-User settings and playlists remain under %LOCALAPPDATA%\VYBE.

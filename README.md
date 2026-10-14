@@ -1,4 +1,4 @@
-uild and install
+build and install
 Extract this folder.
 Keep global.json beside Install-VYBE.bat and the src folder.
 Run Install-VYBE.bat.

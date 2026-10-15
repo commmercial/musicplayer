@@ -1,9 +1,25 @@
 using Microsoft.UI.Xaml.Media;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Collections.Specialized;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 
 namespace Vybe.App;
+
+public sealed class RangeObservableCollection<T> : ObservableCollection<T>
+{
+    public void AddRange(IEnumerable<T> items)
+    {
+        var batch = items.ToList();
+        if (batch.Count == 0) return;
+        CheckReentrancy();
+        foreach (var item in batch) Items.Add(item);
+        OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+        OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+    }
+}
 
 public sealed class TrackItem : INotifyPropertyChanged
 {
@@ -61,3 +77,4 @@ public sealed class PlaylistItem : INotifyPropertyChanged
     public ImageSource? Cover { get => _cover; set { _cover = value; OnPropertyChanged(); } }
     void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
+

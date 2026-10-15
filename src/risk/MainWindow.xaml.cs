@@ -5,7 +5,6 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Microsoft.Web.WebView2.Core;
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using Windows.Media.Audio;
@@ -23,8 +22,6 @@ public sealed partial class MainWindow : Window
     readonly YouTubeMusicService _yt = new();
     readonly SoundCloudService _sc = new();
     readonly DiscordPresenceService _discord = new();
-    readonly HttpClient _soundCloudEmbedHttp = new();
-    readonly WebView2 _playlistImportWebView;
 
     readonly ObservableCollection<TrackItem> _results = new();
     readonly ObservableCollection<TrackItem> _library = new();
@@ -39,7 +36,7 @@ public sealed partial class MainWindow : Window
     bool _shuffleEnabled;
     int _repeatMode;
     bool _automaticFadeStarted;
-    bool _scrubbing, _updatingSeek, _busy, _muted;
+    bool _scrubbing, _updatingSeek, _muted;
     double _lastVolume = 75;
     int _loadToken;
     string _downloadFolder = "";
@@ -54,20 +51,11 @@ public sealed partial class MainWindow : Window
     bool _initializing = true;
     Microsoft.UI.Dispatching.DispatcherQueueTimer? _progressTimer;
     Microsoft.UI.Dispatching.DispatcherQueueTimer? _discordStatusTimer;
+    CancellationTokenSource? _searchCancellation;
 
     public MainWindow()
     {
         InitializeComponent();
-        _playlistImportWebView = new WebView2
-        {
-            Width = 1,
-            Height = 1,
-            Opacity = 0,
-            IsHitTestVisible = false,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top
-        };
-        Root.Children.Add(_playlistImportWebView);
         Title = "Risk";
         try { SystemBackdrop = new DesktopAcrylicBackdrop(); } catch { }
         try
@@ -87,6 +75,7 @@ public sealed partial class MainWindow : Window
         _player.PlaybackFailed += message => DispatcherQueue.TryEnqueue(() => StatusText.Text = "Playback failed: " + message);
         Closed += async (_, _) =>
         {
+            _searchCancellation?.Cancel();
             await _discord.ClearAsync();
             _progressTimer?.Stop();
             _discordStatusTimer?.Stop();
@@ -100,7 +89,7 @@ public sealed partial class MainWindow : Window
         _initializing = false;
         ApplyVolume(VolumeSlider.Value);
         _progressTimer = DispatcherQueue.CreateTimer();
-        _progressTimer.Interval = TimeSpan.FromMilliseconds(250);
+        _progressTimer.Interval = TimeSpan.FromMilliseconds(500);
         _progressTimer.IsRepeating = true;
         _progressTimer.Tick += (_, _) => UpdateProgress();
         _progressTimer.Start();
@@ -137,6 +126,65 @@ public sealed partial class MainWindow : Window
         catch { }
     }
 
+    void Root_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        var width = e.NewSize.Width;
+        var compact = width < 980;
+        var narrow = width < 680;
+        Root.ColumnDefinitions[0].Width = new GridLength(narrow ? 60 : 76);
+        SearchHeader.Margin = width < 760 ? new Thickness(14, 12, 14, 8) : new Thickness(28, 20, 28, 12);
+        ContentArea.Margin = width < 760 ? new Thickness(14, 0, 14, 0) : new Thickness(28, 0, 28, 0);
+
+        LibraryPage.ColumnDefinitions[1].Width = compact ? new GridLength(0) : new GridLength(260);
+        LibraryPage.RowDefinitions[1].Height = compact ? new GridLength(210) : new GridLength(0);
+        Grid.SetColumn(LibraryTracksPanel, 0);
+        Grid.SetColumn(LibraryPlaylistsPanel, compact ? 0 : 1);
+        Grid.SetRow(LibraryTracksPanel, 0);
+        Grid.SetRow(LibraryPlaylistsPanel, compact ? 1 : 0);
+        LibraryTracksPanel.Margin = compact ? new Thickness(0, 0, 0, 12) : new Thickness(0, 0, 20, 0);
+
+        var showPlaylistCover = width >= 860;
+        PlaylistDetailHeaderGrid.ColumnDefinitions[1].Width = showPlaylistCover ? new GridLength(300) : new GridLength(0);
+        PlaylistDetailCoverBorder.Visibility = showPlaylistCover ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistDetailHeader.MinHeight = showPlaylistCover ? 300 : 0;
+        PlaylistDetailHeader.Padding = width < 680 ? new Thickness(10) : new Thickness(16);
+        var stackPlaylistActions = width < 760;
+        PlaylistDetailFooter.RowDefinitions[1].Height = stackPlaylistActions ? GridLength.Auto : new GridLength(0);
+        Grid.SetRow(PlaylistDetailActions, stackPlaylistActions ? 1 : 0);
+        Grid.SetColumn(PlaylistDetailActions, stackPlaylistActions ? 0 : 1);
+        Grid.SetColumnSpan(PlaylistDetailActions, stackPlaylistActions ? 2 : 1);
+        PlaylistDetailActions.Orientation = stackPlaylistActions ? Orientation.Vertical : Orientation.Horizontal;
+        PlaylistPlaybackControls.HorizontalAlignment = stackPlaylistActions ? HorizontalAlignment.Left : HorizontalAlignment.Stretch;
+
+        PlayerLayout.ColumnSpacing = compact ? 12 : 20;
+        PlayerLayout.RowDefinitions[1].Height = compact ? GridLength.Auto : new GridLength(0);
+        if (compact)
+        {
+            Grid.SetRow(NowPlayingPanel, 0);
+            Grid.SetColumn(NowPlayingPanel, 0);
+            Grid.SetRow(VolumePanel, 0);
+            Grid.SetColumn(VolumePanel, 1);
+            Grid.SetRow(TransportPanel, 1);
+            Grid.SetColumn(TransportPanel, 0);
+            Grid.SetColumnSpan(TransportPanel, 2);
+            VolumeSlider.Width = narrow ? 76 : 100;
+            TransportPanel.Width = Math.Clamp(width - Root.ColumnDefinitions[0].ActualWidth -
+                (width < 760 ? 28 : 56) - 48 - 16, 280, 380);
+        }
+        else
+        {
+            Grid.SetRow(NowPlayingPanel, 0);
+            Grid.SetColumn(NowPlayingPanel, 0);
+            Grid.SetRow(TransportPanel, 0);
+            Grid.SetColumn(TransportPanel, 1);
+            Grid.SetColumnSpan(TransportPanel, 1);
+            Grid.SetRow(VolumePanel, 0);
+            Grid.SetColumn(VolumePanel, 2);
+            VolumeSlider.Width = 110;
+            TransportPanel.Width = 380;
+        }
+    }
+
     // ================= NAV =================
 
     void ShowPage(FrameworkElement page)
@@ -164,12 +212,15 @@ public sealed partial class MainWindow : Window
     async void SearchBox_QuerySubmitted(AutoSuggestBox sender, AutoSuggestBoxQuerySubmittedEventArgs args)
     {
         var query = args.QueryText.Trim();
-        if (query.Length == 0 || _busy) return;
+        if (query.Length == 0) return;
+
+        _searchCancellation?.Cancel();
+        var searchCancellation = new CancellationTokenSource();
+        _searchCancellation = searchCancellation;
+        var cancellationToken = searchCancellation.Token;
 
         ShowPage(HomePage);
         _results.Clear();
-        _busy = true;
-
         try
         {
             // Direct link? Route it straight to a source.
@@ -181,7 +232,8 @@ public sealed partial class MainWindow : Window
                 {
                     HomeHeading.Text = "SoundCloud link";
                     StatusText.Text = "Resolving SoundCloud…";
-                    var url = await _sc.ResolveStreamUrlAsync(query);
+                    var url = await _sc.ResolveStreamUrlAsync(query, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     var item = new TrackItem
                     {
                         Title = "SoundCloud track",
@@ -226,24 +278,61 @@ public sealed partial class MainWindow : Window
             HomeHeading.Text = $"Results for \u201c{query}\u201d";
             StatusText.Text = "Searching YouTube Music and SoundCloud…";
 
-            var ytTask = _yt.SearchAsync(query, 25);
-            var scTask = _sc.SearchAsync(query, 15);
-            await Task.WhenAll(ytTask, scTask);
+            var ytTask = _yt.SearchAsync(query, 25, cancellationToken);
+            var scTask = _sc.SearchAsync(query, 15, cancellationToken);
+            var remaining = new HashSet<Task<List<TrackItem>>> { ytTask, scTask };
+            var ytCount = 0;
+            var scCount = 0;
+            var errors = new List<string>();
 
-            foreach (var t in ytTask.Result) _results.Add(t);
-            foreach (var t in scTask.Result) _results.Add(t);
+            while (remaining.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var completed = await Task.WhenAny(remaining);
+                remaining.Remove(completed);
+                try
+                {
+                    var tracks = await completed;
+                    if (!ReferenceEquals(_searchCancellation, searchCancellation)) return;
+                    if (ReferenceEquals(completed, ytTask)) ytCount = tracks.Count;
+                    else scCount = tracks.Count;
+                    foreach (var track in tracks) _results.Add(track);
+                    HydrateArtwork(tracks);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add(ex.Message);
+                }
 
-            StatusText.Text = _results.Count == 0
-                ? "Nothing found. Try different wording."
-                : $"{_results.Count} tracks · YouTube Music {ytTask.Result.Count} · SoundCloud {scTask.Result.Count}";
+                if (remaining.Count > 0)
+                    StatusText.Text = _results.Count > 0
+                        ? $"Found {_results.Count} tracks; checking the other source…"
+                        : "Still searching the other source…";
+            }
 
-            HydrateArtwork(_results);
+            if (errors.Count > 0 && _results.Count == 0)
+                StatusText.Text = "Search failed: " + string.Join("; ", errors);
+            else if (_results.Count == 0)
+                StatusText.Text = "Nothing found. Try different wording.";
+            else
+                StatusText.Text = $"{_results.Count} tracks · YouTube Music {ytCount} · SoundCloud {scCount}";
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            StatusText.Text = "Search failed: " + ex.Message;
+            if (ReferenceEquals(_searchCancellation, searchCancellation))
+                StatusText.Text = "Search failed: " + ex.Message;
         }
-        finally { _busy = false; }
+        finally
+        {
+            if (ReferenceEquals(_searchCancellation, searchCancellation))
+                _searchCancellation = null;
+            searchCancellation.Dispose();
+        }
     }
 
     static string? ExtractVideoId(string url)
@@ -263,7 +352,7 @@ public sealed partial class MainWindow : Window
             {
                 // Loading from the URI avoids converting a non-seekable HttpClient
                 // response stream to IRandomAccessStream, which can fail on Windows.
-                item.Artwork = new BitmapImage { UriSource = uri };
+                item.Artwork = new BitmapImage { DecodePixelWidth = 128, UriSource = uri };
             }
             catch { /* the row's music-note placeholder remains visible */ }
         }
@@ -1038,42 +1127,6 @@ public sealed partial class MainWindow : Window
 
     void PlaylistBack_Click(object sender, RoutedEventArgs e) => ShowPage(LibraryPage);
 
-    async void DeletePlaylist_Click(object sender, RoutedEventArgs e)
-    {
-        if ((sender as FrameworkElement)?.DataContext is not PlaylistItem playlist) return;
-        var dialog = new ContentDialog
-        {
-            Title = "Delete playlist?",
-            Content = $"Are you sure you want to delete \"{playlist.Name}\"?",
-            PrimaryButtonText = "Delete",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Close,
-            XamlRoot = Root.XamlRoot
-        };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        _playlists.Remove(playlist);
-        SavePlaylists();
-        if (ReferenceEquals(_selectedPlaylist, playlist))
-        {
-            _selectedPlaylist = null;
-            PlaylistTracksList.ItemsSource = null;
-            ShowPage(LibraryPage);
-        }
-    }
-
-    void RemovePlaylistTrack_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedPlaylist is not { } playlist || (sender as FrameworkElement)?.DataContext is not TrackItem track) return;
-        playlist.Tracks.Remove(track);
-        playlist.UpdatedAt = DateTimeOffset.Now;
-        PlaylistTrackCount.Text = playlist.Tracks.Count.ToString();
-        DownloadPlaylistButton.IsEnabled = playlist.Tracks.Count > 0;
-        PlaylistDetailUpdated.Text = $"Updated {playlist.UpdatedAt.LocalDateTime:g}";
-        PlaylistTracksList.ItemsSource = null;
-        PlaylistTracksList.ItemsSource = playlist.Tracks;
-        SavePlaylists();
-    }
-
     void PlaylistTracksList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_selectedPlaylist is not { } playlist || PlaylistTracksList.SelectedItem is not TrackItem track) return;
@@ -1085,6 +1138,44 @@ public sealed partial class MainWindow : Window
     {
         if (_selectedPlaylist is not { Tracks.Count: > 0 } playlist) return;
         Play(playlist.Tracks[0], playlist.Tracks, 0, true);
+    }
+
+    async void DeletePlaylist_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not PlaylistItem playlist) return;
+        var dialog = new ContentDialog
+        {
+            Title = "Delete playlist?",
+            Content = $"Are you sure you want to delete ‘{playlist.Name}’?",
+            PrimaryButtonText = "Delete",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = Root.XamlRoot
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        _playlists.Remove(playlist);
+        SavePlaylists();
+        if (ReferenceEquals(_selectedPlaylist, playlist))
+        {
+            _selectedPlaylist = null;
+            ShowPage(LibraryPage);
+        }
+    }
+
+    void RemovePlaylistTrack_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedPlaylist is not { } playlist ||
+            (sender as FrameworkElement)?.DataContext is not TrackItem track) return;
+        if (!playlist.Tracks.Remove(track)) return;
+
+        playlist.UpdatedAt = DateTimeOffset.Now;
+        PlaylistTracksList.ItemsSource = null;
+        PlaylistTracksList.ItemsSource = playlist.Tracks;
+        PlaylistTrackCount.Text = playlist.Tracks.Count.ToString();
+        DownloadPlaylistButton.IsEnabled = playlist.Tracks.Count > 0;
+        PlaylistDetailUpdated.Text = $"Updated {playlist.UpdatedAt.LocalDateTime:g}";
+        SavePlaylists();
     }
 
     async void ImportPlaylist_Click(object sender, RoutedEventArgs e)
@@ -1106,28 +1197,11 @@ public sealed partial class MainWindow : Window
         {
             string name, description, artworkUrl;
             List<TrackItem> tracks;
-            var convertingFromSoundCloud = uri.Host.Contains("soundcloud.com", StringComparison.OrdinalIgnoreCase);
-            if (convertingFromSoundCloud)
-            {
-                try
-                {
-                    (name, description, artworkUrl, tracks) = await _sc.GetPlaylistAsync(uri.ToString());
-                }
-                catch (Exception ex) when (ex is InvalidOperationException || ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.NotFound })
-                {
-                    (name, description, artworkUrl, tracks) = await ImportSoundCloudPlaylistFromWidgetAsync(uri);
-                }
-            }
+            if (uri.Host.Contains("soundcloud.com", StringComparison.OrdinalIgnoreCase))
+                (name, description, artworkUrl, tracks) = await _sc.GetPlaylistAsync(uri.ToString());
             else if (uri.Host.Contains("youtube.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Contains("youtu.be", StringComparison.OrdinalIgnoreCase))
                 (name, description, artworkUrl, tracks) = await _yt.GetPlaylistAsync(uri.ToString());
             else throw new InvalidOperationException("Use a SoundCloud or YouTube Music playlist link.");
-
-            var soundCloudTrackCount = tracks.Count;
-            var unmatchedSoundCloudTracks = 0;
-            if (convertingFromSoundCloud)
-                (tracks, unmatchedSoundCloudTracks) = await ConvertSoundCloudTracksToYouTubeMusicAsync(tracks);
-            if (tracks.Count == 0 && convertingFromSoundCloud)
-                throw new InvalidOperationException("No YouTube Music matches were found for this SoundCloud playlist.");
 
             var playlist = new PlaylistItem
             {
@@ -1142,9 +1216,6 @@ public sealed partial class MainWindow : Window
             SavePlaylists();
             PlaylistList.SelectedItem = null;
             OpenPlaylist(playlist);
-            if (convertingFromSoundCloud)
-                StatusText.Text = $"Added {tracks.Count} YouTube Music matches from {soundCloudTrackCount} SoundCloud songs" +
-                                  (unmatchedSoundCloudTracks > 0 ? $" · skipped {unmatchedSoundCloudTracks} without a close match" : "");
         }
         catch (Exception ex)
         {
@@ -1157,153 +1228,6 @@ public sealed partial class MainWindow : Window
             };
             await error.ShowAsync();
         }
-    }
-
-    async Task<(List<TrackItem> Tracks, int Unmatched)> ConvertSoundCloudTracksToYouTubeMusicAsync(List<TrackItem> sourceTracks)
-    {
-        var converted = new List<TrackItem>();
-        var usedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int unmatched = 0;
-        for (var i = 0; i < sourceTracks.Count; i++)
-        {
-            var source = sourceTracks[i];
-            StatusText.Text = $"Finding YouTube Music matches · {i + 1} of {sourceTracks.Count}";
-            var query = string.Join(" ", new[] { source.Title, source.ArtistName }.Where(s => !string.IsNullOrWhiteSpace(s)));
-            try
-            {
-                var candidates = await _yt.SearchAsync(query, 10);
-                var best = candidates
-                    .Select(candidate => (Track: candidate, Score: ScoreTrackMatch(source, candidate)))
-                    .Where(item => item.Score >= 0.62 && !usedIds.Contains(item.Track.Id))
-                    .OrderByDescending(item => item.Score)
-                    .Select(item => item.Track)
-                    .FirstOrDefault();
-                if (best is null) { unmatched++; continue; }
-                usedIds.Add(best.Id);
-                converted.Add(best);
-            }
-            catch
-            {
-                unmatched++;
-            }
-        }
-        return (converted, unmatched);
-    }
-
-    static double ScoreTrackMatch(TrackItem source, TrackItem candidate)
-    {
-        static string[] Tokens(string value) => new string(value.ToLowerInvariant()
-                .Select(c => char.IsLetterOrDigit(c) ? c : ' ').ToArray())
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(token => token is not ("official" or "audio" or "video" or "lyrics" or "lyric" or "visualizer" or "topic" or "feat" or "ft"))
-            .ToArray();
-
-        var sourceTitle = Tokens(source.Title);
-        var candidateTitle = Tokens(candidate.Title);
-        if (sourceTitle.Length == 0 || candidateTitle.Length == 0) return 0;
-        var titleOverlap = sourceTitle.Intersect(candidateTitle).Count() / (double)sourceTitle.Distinct().Count();
-        var sourceArtist = Tokens(source.ArtistName);
-        var candidateArtist = Tokens(candidate.ArtistName);
-        var artistOverlap = sourceArtist.Length == 0 ? 0.5 :
-            sourceArtist.Intersect(candidateArtist).Count() / (double)sourceArtist.Distinct().Count();
-        var durationScore = 0.5;
-        if (TimeSpan.TryParse(source.DurationLabel, out var sourceDuration) &&
-            TimeSpan.TryParse(candidate.DurationLabel, out var candidateDuration) && sourceDuration.TotalSeconds > 0)
-        {
-            var difference = Math.Abs(sourceDuration.TotalSeconds - candidateDuration.TotalSeconds);
-            durationScore = Math.Max(0, 1 - difference / Math.Max(20, sourceDuration.TotalSeconds * 0.2));
-        }
-        return titleOverlap * 0.72 + artistOverlap * 0.20 + durationScore * 0.08;
-    }
-
-    async Task<(string Name, string Description, string ArtworkUrl, List<TrackItem> Tracks)> ImportSoundCloudPlaylistFromWidgetAsync(Uri playlistUri)
-    {
-        try
-        {
-            await _playlistImportWebView.EnsureCoreWebView2Async();
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException("Could not start the built-in web player needed to read this SoundCloud playlist.", ex);
-        }
-
-        var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnMessage(CoreWebView2 sender, CoreWebView2WebMessageReceivedEventArgs args)
-        {
-            sender.WebMessageReceived -= OnMessage;
-            try { completion.TrySetResult(args.TryGetWebMessageAsString()); }
-            catch (Exception ex) { completion.TrySetException(ex); }
-        }
-        _playlistImportWebView.CoreWebView2.WebMessageReceived += OnMessage;
-
-        var encodedUrl = Uri.EscapeDataString(playlistUri.ToString());
-        var html = """
-            <!doctype html><html><head><meta charset="utf-8"></head><body>
-            <iframe id="sc" width="1" height="1" allow="autoplay" style="border:0"
-              src="https://w.soundcloud.com/player/?url=ENCODED_URL&amp;auto_play=false&amp;hide_related=true&amp;show_comments=false&amp;show_user=true&amp;visual=false"></iframe>
-            <script src="https://w.soundcloud.com/player/api.js"></script>
-            <script>
-            (() => {
-              const widget = SC.Widget(document.getElementById('sc'));
-              let sent = false;
-              const send = value => { if (!sent) { sent = true; window.chrome.webview.postMessage(JSON.stringify(value)); } };
-              setTimeout(() => send({error:'SoundCloud did not load this playlist. Make sure it is public and embeddable.'}), 25000);
-              widget.bind(SC.Widget.Events.READY, () => widget.getSounds(sounds => {
-                if (!Array.isArray(sounds) || sounds.length === 0) {
-                  send({error:'SoundCloud returned no songs. This playlist may be private or embedding may be disabled.'});
-                  return;
-                }
-                const tracks = sounds.map(s => ({title:s.title||'', permalink_url:s.permalink_url||'', duration:s.duration||0,
-                  artwork_url:s.artwork_url||'', user:s.user||{}}));
-                send({tracks});
-              }));
-            })();
-            </script></body></html>
-            """.Replace("ENCODED_URL", encodedUrl, StringComparison.Ordinal);
-        _playlistImportWebView.NavigateToString(html);
-
-        string message;
-        try { message = await completion.Task.WaitAsync(TimeSpan.FromSeconds(35)); }
-        catch (TimeoutException ex) { throw new InvalidOperationException("SoundCloud took too long to load the playlist. Try again, or check that it is public and embeddable.", ex); }
-        finally { _playlistImportWebView.CoreWebView2.WebMessageReceived -= OnMessage; }
-
-        using var response = JsonDocument.Parse(message);
-        var root = response.RootElement;
-        if (root.TryGetProperty("error", out var error))
-            throw new InvalidOperationException(error.GetString() ?? "SoundCloud could not load this playlist.");
-
-        var tracks = new List<TrackItem>();
-        foreach (var item in root.GetProperty("tracks").EnumerateArray())
-        {
-            var title = item.TryGetProperty("title", out var titleValue) ? titleValue.GetString() ?? "" : "";
-            var permalink = item.TryGetProperty("permalink_url", out var urlValue) ? urlValue.GetString() ?? "" : "";
-            if (title.Length == 0 || permalink.Length == 0) continue;
-            var user = item.TryGetProperty("user", out var userValue) ? userValue : default;
-            var artist = user.ValueKind == JsonValueKind.Object && user.TryGetProperty("username", out var username) ? username.GetString() ?? "SoundCloud" : "SoundCloud";
-            var artistUrl = user.ValueKind == JsonValueKind.Object && user.TryGetProperty("permalink_url", out var artistUrlValue) ? artistUrlValue.GetString() ?? "" : "";
-            var artwork = item.TryGetProperty("artwork_url", out var artworkValue) ? artworkValue.GetString() ?? "" : "";
-            var duration = item.TryGetProperty("duration", out var durationValue) && durationValue.TryGetDouble(out var ms) ? ms : 0;
-            tracks.Add(new TrackItem
-            {
-                Title = title, Subtitle = artist, ArtistName = artist, ArtistUrl = artistUrl,
-                Id = permalink, WebUrl = permalink, Source = "SOUNDCLOUD", IsOnline = true,
-                DurationLabel = TimeSpan.FromMilliseconds(duration).ToString(@"m\:ss"),
-                ArtworkUrl = artwork.Replace("-large", "-t500x500", StringComparison.OrdinalIgnoreCase)
-            });
-        }
-        if (tracks.Count == 0) throw new InvalidOperationException("SoundCloud did not return any importable songs for this playlist.");
-
-        var playlistName = "SoundCloud playlist";
-        var playlistArtwork = tracks[0].ArtworkUrl;
-        try
-        {
-            var oembedUrl = $"https://soundcloud.com/oembed?format=json&url={Uri.EscapeDataString(playlistUri.ToString())}";
-            using var oembed = JsonDocument.Parse(await _soundCloudEmbedHttp.GetStringAsync(oembedUrl));
-            if (oembed.RootElement.TryGetProperty("title", out var title)) playlistName = title.GetString() ?? playlistName;
-            if (oembed.RootElement.TryGetProperty("thumbnail_url", out var thumbnail)) playlistArtwork = thumbnail.GetString() ?? playlistArtwork;
-        }
-        catch { /* The track list is still usable if SoundCloud's optional playlist details endpoint is unavailable. */ }
-        return (playlistName, "", playlistArtwork.Replace("-large", "-t500x500", StringComparison.OrdinalIgnoreCase), tracks);
     }
 
     async void CreatePlaylist_Click(object sender, RoutedEventArgs e)
@@ -1679,3 +1603,4 @@ public sealed partial class MainWindow : Window
         }
     }
 }
+

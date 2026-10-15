@@ -4,19 +4,7 @@ title Risk Setup
 color 07
 cd /d "%~dp0"
 
-set "APP_ROOT=%~dp0"
-set "PROJECT=%APP_ROOT%src\risk\Vybe.App.csproj"
-if not exist "%PROJECT%" set "PROJECT=%APP_ROOT%src\Vybe.App\Vybe.App.csproj"
-if not exist "%PROJECT%" if exist "%APP_ROOT%risk\src\risk\Vybe.App.csproj" (
-    set "APP_ROOT=%APP_ROOT%risk\"
-    set "PROJECT=%APP_ROOT%src\risk\Vybe.App.csproj"
-)
-rem Archives sometimes gain extra wrapper folders when extracted. Find the
-rem actual project instead of reporting that the setup files are incomplete.
-if not exist "%PROJECT%" (
-    for /r "%~dp0" %%F in (Vybe.App.csproj) do if not defined FOUND_PROJECT set "FOUND_PROJECT=%%~fF"
-    if defined FOUND_PROJECT set "PROJECT=%FOUND_PROJECT%"
-)
+set "PROJECT=%~dp0src\risk\Vybe.App.csproj"
 set "OUT=%LOCALAPPDATA%\Programs\Risk"
 set "APP_EXE=%OUT%\Risk.exe"
 set "ICON=%OUT%\Assets\app-icon-v2.ico"
@@ -35,12 +23,7 @@ echo   ----------------------------------------
 echo.
 
 if not exist "%PROJECT%" (
-    >"%INSTALL_LOG%" echo Project file not found.
-    >>"%INSTALL_LOG%" echo Installer location: %~f0
-    >>"%INSTALL_LOG%" echo Expected: src\risk\Vybe.App.csproj or src\Vybe.App\Vybe.App.csproj
-    >>"%INSTALL_LOG%" echo Checked recursively under: %~dp0
-    echo   Could not find the app project in this folder.
-    echo   Keep the installer beside the full src folder, then run it again.
+    echo   Setup files are incomplete. Extract the full app folder and try again.
     goto failed
 )
 
@@ -79,7 +62,7 @@ if errorlevel 1 goto failed
 if not exist "%APP_EXE%" goto failed
 
 echo   [4/4] Updating shortcuts and taskbar icon
-powershell -NoProfile -ExecutionPolicy Bypass -File "%APP_ROOT%scripts\refresh-shortcuts.ps1" -ExePath "%APP_EXE%" -IconPath "%ICON%" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\refresh-shortcuts.ps1" -ExePath "%APP_EXE%" -IconPath "%ICON%" >nul 2>&1
 
 echo.
 echo   ----------------------------------------
@@ -100,3 +83,4 @@ echo.
 echo   Press any key to close.
 pause >nul
 exit /b 1
+

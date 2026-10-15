@@ -14,7 +14,7 @@ public sealed class YouTubeMusicService
     public async Task<List<TrackItem>> SearchAsync(string query, int limit = 25, CancellationToken ct = default)
     {
         var page = _client.SearchAsync(query, SearchCategory.Songs);
-        var items = await page.FetchItemsAsync(0, limit, ct);
+        var items = await page.FetchItemsAsync(0, limit, ct).ConfigureAwait(false);
 
         var results = new List<TrackItem>();
         foreach (var item in items)
@@ -142,3 +142,4 @@ public sealed class YouTubeMusicService
         return name;
     }
 }
+

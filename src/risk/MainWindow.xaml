@@ -8,7 +8,7 @@
     mc:Ignorable="d"
     Title="&lt;3">
 
-    <Grid x:Name="Root" Background="Transparent">
+    <Grid x:Name="Root" Background="Transparent" SizeChanged="Root_SizeChanged">
         <Grid.Resources>
             <SolidColorBrush x:Key="GlassPanelBrush" Color="#24FFFFFF" />
             <Style TargetType="Button">
@@ -118,7 +118,7 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" Margin="28,20,28,12" ColumnSpacing="12">
+            <Grid x:Name="SearchHeader" Grid.Row="0" Margin="28,20,28,12" ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -142,7 +142,7 @@
                 </DropDownButton>
             </Grid>
 
-            <Grid Grid.Row="1" Margin="28,0,28,0">
+            <Grid x:Name="ContentArea" Grid.Row="1" Margin="28,0,28,0">
 
                 <!-- HOME / SEARCH RESULTS -->
                 <Grid x:Name="HomePage">
@@ -253,12 +253,16 @@
 
                 <!-- LIBRARY -->
                 <Grid x:Name="LibraryPage" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="0" />
+                    </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="260" />
                     </Grid.ColumnDefinitions>
 
-                    <Grid Grid.Column="0" Margin="0,0,20,0">
+                    <Grid x:Name="LibraryTracksPanel" Grid.Column="0" Margin="0,0,20,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -294,7 +298,7 @@
                         </ListView>
                     </Grid>
 
-                    <Grid Grid.Column="1">
+                    <Grid x:Name="LibraryPlaylistsPanel" Grid.Column="1">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -315,6 +319,7 @@
                                             <ColumnDefinition Width="58" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <Border Width="54" Height="54" CornerRadius="7" Background="#30303030">
                                             <Grid>
@@ -325,16 +330,14 @@
                                         </Border>
                                         <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
-                                            <Button Width="34" Height="34" Padding="0"
-                                                    Click="EditPlaylist_Click" ToolTipService.ToolTip="Edit playlist">
-                                                <FontIcon Glyph="&#xE70F;" FontSize="13" />
-                                            </Button>
-                                            <Button Width="34" Height="34" Padding="0"
-                                                    Click="DeletePlaylist_Click" ToolTipService.ToolTip="Delete playlist">
-                                                <FontIcon Glyph="&#xE711;" FontSize="13" />
-                                            </Button>
-                                        </StackPanel>
+                                        <Button Grid.Column="2" Width="34" Height="34" Padding="0"
+                                                Click="EditPlaylist_Click" ToolTipService.ToolTip="Edit playlist">
+                                            <FontIcon Glyph="&#xE70F;" FontSize="13" />
+                                        </Button>
+                                        <Button Grid.Column="3" Width="34" Height="34" Padding="0"
+                                                Click="DeletePlaylist_Click" ToolTipService.ToolTip="Delete playlist">
+                                            <FontIcon Glyph="&#xE711;" FontSize="13" />
+                                        </Button>
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -346,8 +349,8 @@
                 <Grid x:Name="PlaylistDetailPage" Visibility="Collapsed">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="22">
-                            <Border MinHeight="300" Padding="16" CornerRadius="14" Background="{StaticResource GlassPanelBrush}">
-                            <Grid>
+                            <Border x:Name="PlaylistDetailHeader" MinHeight="300" Padding="16" CornerRadius="14" Background="{StaticResource GlassPanelBrush}">
+                            <Grid x:Name="PlaylistDetailHeaderGrid">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="300" />
@@ -366,8 +369,16 @@
                                         <TextBlock x:Name="PlaylistDetailDescription" FontSize="15" TextWrapping="Wrap" />
                                         <TextBlock x:Name="PlaylistDetailUpdated" FontSize="12" />
                                     </StackPanel>
-                                    <Grid Grid.Row="2" Margin="0,18,0,0">
-                                        <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
+                                    <Grid x:Name="PlaylistDetailFooter" Grid.Row="2" Margin="0,18,0,0">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="0" />
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel x:Name="PlaylistPlaybackControls" Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
                                             <Button Width="64" Height="64" CornerRadius="32" Click="PlayPlaylist_Click"
                                                     ToolTipService.ToolTip="Play playlist">
                                                 <FontIcon Glyph="&#xE768;" FontSize="24" />
@@ -377,7 +388,7 @@
                                                 <TextBlock Text="TRACKS" FontSize="11" FontWeight="SemiBold" />
                                             </StackPanel>
                                         </StackPanel>
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                        <StackPanel x:Name="PlaylistDetailActions" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"
                                                     VerticalAlignment="Center" Spacing="8">
                                             <Button x:Name="DownloadPlaylistButton" Click="DownloadPlaylist_Click"
                                                     ToolTipService.ToolTip="Download all tracks in this playlist">
@@ -395,7 +406,7 @@
                                         </StackPanel>
                                     </Grid>
                                 </Grid>
-                                <Border Grid.Column="1" Width="280" Height="280" CornerRadius="12"
+                                <Border x:Name="PlaylistDetailCoverBorder" Grid.Column="1" Width="280" Height="280" CornerRadius="12"
                                         Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
                                     <Image x:Name="PlaylistDetailCover" Stretch="UniformToFill" />
                                 </Border>
@@ -414,13 +425,13 @@
                                             </Grid.ColumnDefinitions>
                                             <Image Grid.Column="0" Source="{Binding Artwork}" Width="44" Height="44" Stretch="UniformToFill" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
-                                                <TextBlock Text="{Binding Subtitle}" />
+                                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Subtitle}" TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
                                             <TextBlock Grid.Column="2" Text="{Binding DurationLabel}" VerticalAlignment="Center" />
-                                            <Button Grid.Column="3" Width="34" Height="34" Padding="0" Margin="10,0,0,0"
+                                            <Button Grid.Column="3" Width="36" Height="36" Padding="0"
                                                     Click="RemovePlaylistTrack_Click" ToolTipService.ToolTip="Remove from playlist">
-                                                <FontIcon Glyph="&#xE711;" FontSize="13" />
+                                                <FontIcon Glyph="&#xE738;" FontSize="13" />
                                             </Button>
                                         </Grid>
                                     </DataTemplate>
@@ -527,7 +538,11 @@
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="24,14">
-            <Grid ColumnSpacing="20">
+            <Grid x:Name="PlayerLayout" ColumnSpacing="20">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="0" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" MinWidth="200" />
                     <ColumnDefinition Width="Auto" />
@@ -535,7 +550,7 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- Now playing -->
-                <Grid Grid.Column="0" ColumnSpacing="14">
+                <Grid x:Name="NowPlayingPanel" Grid.Column="0" ColumnSpacing="14">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
@@ -563,7 +578,7 @@
                 </Grid>
 
                 <!-- Transport + seek -->
-                <StackPanel Grid.Column="1" Spacing="4" Width="380">
+                <StackPanel x:Name="TransportPanel" Grid.Column="1" Spacing="4" Width="380">
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="6">
                         <Button x:Name="ShuffleButton" Style="{StaticResource TransportButton}" Click="ShuffleButton_Click"
                                 ToolTipService.ToolTip="Shuffle off">
@@ -614,7 +629,7 @@
                 </StackPanel>
 
                 <!-- Volume -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <StackPanel x:Name="VolumePanel" Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <Button x:Name="MuteButton" Style="{StaticResource TransportButton}" Width="34" Height="34"
                             Click="Mute_Click" ToolTipService.ToolTip="Mute">
                         <FontIcon x:Name="VolumeIcon" Glyph="&#xE767;" FontSize="15" />
@@ -627,3 +642,4 @@
         </Border>
     </Grid>
 </Window>
+

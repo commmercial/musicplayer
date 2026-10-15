@@ -11,6 +11,7 @@
     <Grid x:Name="Root" Background="Transparent" SizeChanged="Root_SizeChanged">
         <Grid.Resources>
             <SolidColorBrush x:Key="GlassPanelBrush" Color="#24FFFFFF" />
+            <SolidColorBrush x:Key="ThemeAccentBrush" Color="#7DD3FC" />
             <Style TargetType="Button">
                 <Setter Property="Background" Value="#24FFFFFF" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -26,6 +27,18 @@
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="HorizontalAlignment" Value="Center" />
                 <Setter Property="Margin" Value="0,4" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ToggleButton">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}">
+                                <ContentPresenter Content="{TemplateBinding Content}"
+                                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
             </Style>
             <Style x:Key="TransportButton" TargetType="Button">
                 <Setter Property="Background" Value="Transparent" />
@@ -58,6 +71,20 @@
                 <Setter Property="VerticalContentAlignment" Value="Center" />
                 <Setter Property="CornerRadius" Value="6" />
             </Style>
+            <Style x:Key="PlaylistItemContainerStyle" TargetType="ListViewItem">
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ListViewItem">
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
         </Grid.Resources>
 
         <Grid.ColumnDefinitions>
@@ -70,10 +97,10 @@
         </Grid.RowDefinitions>
 
         <!-- ============ LEFT RAIL ============ -->
-        <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
+        <Border x:Name="SidebarRail" Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
                 Background="{StaticResource GlassPanelBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="0,0,1,0">
+                BorderThickness="0">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -87,20 +114,24 @@
                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                 </StackPanel>
 
-                <StackPanel Grid.Row="1" HorizontalAlignment="Center">
-                    <ToggleButton x:Name="HomeNav" Style="{StaticResource RailButton}" Click="HomeNav_Click"
-                                  ToolTipService.ToolTip="Home">
-                        <FontIcon Glyph="&#xE80F;" FontSize="17" />
-                    </ToggleButton>
-                    <ToggleButton x:Name="LibraryNav" Style="{StaticResource RailButton}" Click="LibraryNav_Click"
-                                  ToolTipService.ToolTip="Library">
-                        <FontIcon Glyph="&#xE8F1;" FontSize="17" />
-                    </ToggleButton>
-                    <ToggleButton x:Name="EqualizerNav" Style="{StaticResource RailButton}" Click="EqualizerNav_Click"
-                                  ToolTipService.ToolTip="Equalizer">
-                        <FontIcon Glyph="&#xE992;" FontSize="17" />
-                    </ToggleButton>
-                </StackPanel>
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel HorizontalAlignment="Center">
+                        <ToggleButton x:Name="HomeNav" Style="{StaticResource RailButton}" Click="HomeNav_Click"
+                                      ToolTipService.ToolTip="Home">
+                            <FontIcon Glyph="&#xE80F;" FontSize="17" />
+                        </ToggleButton>
+                        <ToggleButton x:Name="LibraryNav" Style="{StaticResource RailButton}" Click="LibraryNav_Click"
+                                      ToolTipService.ToolTip="Library">
+                            <FontIcon Glyph="&#xE8F1;" FontSize="17" />
+                        </ToggleButton>
+                        <ToggleButton x:Name="EqualizerNav" Style="{StaticResource RailButton}" Click="EqualizerNav_Click"
+                                      ToolTipService.ToolTip="Equalizer">
+                            <FontIcon Glyph="&#xE992;" FontSize="17" />
+                        </ToggleButton>
+                        <Border Height="1" Width="28" Margin="0,10,0,6" Background="#44FFFFFF" />
+                        <StackPanel x:Name="SidebarPlaylistsStack" HorizontalAlignment="Center" Spacing="2" />
+                    </StackPanel>
+                </ScrollViewer>
 
                 <ToggleButton Grid.Row="2" x:Name="SettingsNav" Style="{StaticResource RailButton}"
                               Click="SettingsNav_Click" Margin="0,0,0,18"
@@ -137,6 +168,7 @@
                         <MenuFlyout>
                             <MenuFlyoutItem Text="Import files" Click="Import_Click" />
                             <MenuFlyoutItem Text="Import playlist link" Click="ImportPlaylist_Click" />
+                            <MenuFlyoutItem Text="Import Spotify playlist data" Click="ImportSpotifyPlaylist_Click" />
                         </MenuFlyout>
                     </DropDownButton.Flyout>
                 </DropDownButton>
@@ -162,6 +194,7 @@
                                 <Grid Height="60" ColumnSpacing="14" Padding="0,4">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="44" />
+                                        <ColumnDefinition Width="36" />
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
@@ -177,18 +210,23 @@
                                         </Grid>
                                     </Border>
 
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <Button Grid.Column="1" Width="32" Height="32" Padding="0"
+                                            Click="AddTrackToPlaylist_Click" ToolTipService.ToolTip="Add to playlist">
+                                        <FontIcon Glyph="&#xE710;" FontSize="14" />
+                                    </Button>
+
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                         <Button Content="{Binding ArtistName}" Click="ArtistProfile_Click"
                                                 Style="{StaticResource ArtistLinkButton}"
                                                 ToolTipService.ToolTip="Open artist profile" />
                                     </StackPanel>
 
-                                    <TextBlock Grid.Column="2" Text="{Binding Source}" FontSize="10" FontWeight="SemiBold"
+                                    <TextBlock Grid.Column="3" Text="{Binding Source}" FontSize="10" FontWeight="SemiBold"
                                                VerticalAlignment="Center" Margin="0,0,4,0"
                                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
-                                    <TextBlock Grid.Column="3" Text="{Binding DurationLabel}" FontSize="12"
+                                    <TextBlock Grid.Column="4" Text="{Binding DurationLabel}" FontSize="12"
                                                VerticalAlignment="Center" Width="46" TextAlignment="Right"
                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 </Grid>
@@ -311,13 +349,16 @@
                             </Button>
                         </Grid>
                         <ListView x:Name="PlaylistList" Grid.Row="1" SelectionMode="Single"
-                                  SelectionChanged="PlaylistList_SelectionChanged" ItemContainerTransitions="{x:Null}">
+                                  SelectionChanged="PlaylistList_SelectionChanged" ItemContainerTransitions="{x:Null}"
+                                  ItemContainerStyle="{StaticResource PlaylistItemContainerStyle}">
                             <ListView.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Height="72" ColumnSpacing="10" Padding="0,6">
+                                    <Border CornerRadius="10" Padding="5" Background="Transparent" Loaded="PlaylistRow_Loaded">
+                                    <Grid Height="62" ColumnSpacing="10" Padding="0,1">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="58" />
                                             <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <Border Width="54" Height="54" CornerRadius="7" Background="#30303030">
@@ -329,17 +370,16 @@
                                         </Border>
                                         <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
-                                            <Button Width="34" Height="34" Padding="0"
-                                                    Click="EditPlaylist_Click" ToolTipService.ToolTip="Edit playlist">
-                                                <FontIcon Glyph="&#xE70F;" FontSize="13" />
-                                            </Button>
-                                            <Button Width="34" Height="34" Padding="0"
-                                                    Click="DeletePlaylist_Click" ToolTipService.ToolTip="Delete playlist">
-                                                <FontIcon Glyph="&#xE711;" FontSize="13" />
-                                            </Button>
-                                        </StackPanel>
+                                        <Button Grid.Column="2" Width="34" Height="34" Padding="0"
+                                                Click="EditPlaylist_Click" ToolTipService.ToolTip="Edit playlist">
+                                            <FontIcon Glyph="&#xE70F;" FontSize="13" />
+                                        </Button>
+                                        <Button Grid.Column="3" Width="34" Height="34" Padding="0"
+                                                Click="DeletePlaylist_Click" ToolTipService.ToolTip="Delete playlist">
+                                            <FontIcon Glyph="&#xE711;" FontSize="13" />
+                                        </Button>
                                     </Grid>
+                                    </Border>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
@@ -430,7 +470,7 @@
                                                 <TextBlock Text="{Binding Subtitle}" TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
                                             <TextBlock Grid.Column="2" Text="{Binding DurationLabel}" VerticalAlignment="Center" />
-                                            <Button Grid.Column="3" Width="34" Height="34" Padding="0" Margin="10,0,0,0"
+                                            <Button Grid.Column="3" Width="36" Height="36" Padding="0"
                                                     Click="RemovePlaylistTrack_Click" ToolTipService.ToolTip="Remove from playlist">
                                                 <FontIcon Glyph="&#xE711;" FontSize="13" />
                                             </Button>
@@ -465,68 +505,169 @@
                 </Grid>
 
                 <!-- SETTINGS -->
-                <Grid x:Name="SettingsPage" Visibility="Collapsed" MaxWidth="560" HorizontalAlignment="Left">
-                    <StackPanel Spacing="18">
-                        <TextBlock Text="Settings" FontSize="22" FontWeight="SemiBold" Margin="0,4,0,4" />
-
-                        <StackPanel Spacing="6">
-                            <TextBlock Text="Appearance" FontSize="12" FontWeight="SemiBold"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <ComboBox x:Name="ThemeBox" Width="220" SelectionChanged="ThemeBox_SelectionChanged">
-                                <ComboBoxItem Content="Dark" />
-                                <ComboBoxItem Content="Light" />
-                            </ComboBox>
-                        </StackPanel>
-
-                        <StackPanel Spacing="6">
-                            <TextBlock Text="Playback" FontSize="12" FontWeight="SemiBold"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <ToggleSwitch x:Name="CrossfadeToggle" Header="Crossfade between songs"
-                                          OnContent="On" OffContent="Off" IsOn="False"
-                                          Toggled="CrossfadeToggle_Toggled" />
-                            <Grid ColumnSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <Slider x:Name="CrossfadeDurationSlider" Minimum="0.5" Maximum="12"
-                                        Value="3" StepFrequency="0.5" IsEnabled="False"
-                                        ValueChanged="CrossfadeDurationSlider_ValueChanged" />
-                                <TextBlock x:Name="CrossfadeDurationText" Grid.Column="1" Text="3.0 seconds"
-                                           VerticalAlignment="Center" MinWidth="78" />
-                            </Grid>
-                        </StackPanel>
-
-                        <StackPanel Spacing="6">
-                            <TextBlock Text="Download folder" FontSize="12" FontWeight="SemiBold"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <Grid ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox x:Name="DownloadFolderBox" Grid.Column="0" IsReadOnly="True" />
-                                <Button Grid.Column="1" Content="Change" Click="ChangeFolder_Click" />
-                            </Grid>
-                        </StackPanel>
-
-                        <StackPanel Spacing="6">
-                            <TextBlock Text="Discord activity" FontSize="12" FontWeight="SemiBold"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <ToggleSwitch x:Name="DiscordActivityToggle" Header="Show what I’m listening to on Discord"
-                                          OnContent="On" OffContent="Off" IsOn="True"
-                                          Toggled="DiscordActivityToggle_Toggled" />
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="ConnectDiscordButton" Content="Connect to Discord" Click="AuthorizeDiscord_Click" />
-                                <Button x:Name="DisconnectDiscordButton" Content="Disconnect from Discord"
-                                        Click="DisconnectDiscord_Click" Visibility="Collapsed" />
-                            </StackPanel>
-                            <TextBlock x:Name="DiscordActivityStatus" Text="Discord activity is off."
-                                       TextWrapping="Wrap" Visibility="Collapsed" />
-                        </StackPanel>
-
-                        <Button Content="Save settings" Click="SaveSettings_Click" />
-                    </StackPanel>
+                <Grid x:Name="SettingsPage" Visibility="Collapsed" MaxWidth="760" HorizontalAlignment="Left">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="Settings" FontSize="22" FontWeight="SemiBold" Margin="0,4,0,12" />
+                    <TabView x:Name="SettingsTabs" Grid.Row="1" IsAddTabButtonVisible="False" MinHeight="360">
+                        <TabViewItem Header="General" IsClosable="False">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="14" Margin="8">
+                                    <ToggleSwitch x:Name="StartWithWindowsToggle" Header="Start Risk when Windows starts"
+                                                  OnContent="On" OffContent="Off"
+                                                  Toggled="StartWithWindowsToggle_Toggled" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabViewItem>
+                        <TabViewItem Header="Appearance" IsClosable="False">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="10" Margin="8">
+                                    <TextBlock Text="Choose a color theme" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <ComboBox x:Name="ThemeBox" Width="240" HorizontalAlignment="Left"
+                                              SelectionChanged="ThemeBox_SelectionChanged">
+                                        <ComboBoxItem Content="Dark" Tag="Dark" />
+                                        <ComboBoxItem Content="Light" Tag="Light" />
+                                        <ComboBoxItem Content="Midnight Blue" Tag="Midnight" />
+                                        <ComboBoxItem Content="Ocean" Tag="Ocean" />
+                                        <ComboBoxItem Content="Rose" Tag="Rose" />
+                                        <ComboBoxItem Content="Forest" Tag="Forest" />
+                                    </ComboBox>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabViewItem>
+                        <TabViewItem Header="Playback" IsClosable="False">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="16" Margin="8">
+                                    <ToggleSwitch x:Name="CrossfadeToggle" Header="Crossfade between songs"
+                                                  OnContent="On" OffContent="Off" IsOn="False"
+                                                  Toggled="CrossfadeToggle_Toggled" />
+                                    <ToggleSwitch x:Name="AutoplaySimilarToggle" Header="Autoplay similar tracks when the queue ends"
+                                                  OnContent="On" OffContent="Off" IsOn="True"
+                                                  Toggled="AutoplaySimilarToggle_Toggled" />
+                                    <ToggleSwitch x:Name="NormalizeVolumeToggle" Header="Normalize volume (YouTube Music)"
+                                                  OnContent="On" OffContent="Off" IsOn="True"
+                                                  Toggled="NormalizeVolumeToggle_Toggled" />
+                                    <StackPanel Spacing="4" Margin="0,0,0,4">
+                                        <TextBlock Text="Volume normalization level" FontSize="12" FontWeight="SemiBold" />
+                                        <ComboBox x:Name="NormalizationLevelBox" Width="220" HorizontalAlignment="Left"
+                                                  SelectionChanged="NormalizationLevelBox_SelectionChanged">
+                                            <ComboBoxItem Content="Quiet" Tag="Quiet" />
+                                            <ComboBoxItem Content="Normal" Tag="Normal" />
+                                            <ComboBoxItem Content="Loud" Tag="Loud" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel Spacing="4" Margin="0,0,0,4">
+                                        <TextBlock Text="Streaming quality (YouTube Music)" FontSize="12" FontWeight="SemiBold" />
+                                        <ComboBox x:Name="StreamingQualityBox" Width="220" HorizontalAlignment="Left"
+                                                  SelectionChanged="StreamingQualityBox_SelectionChanged">
+                                            <ComboBoxItem Content="Automatic" Tag="Auto" />
+                                            <ComboBoxItem Content="Low" Tag="Low" />
+                                            <ComboBoxItem Content="Normal" Tag="Normal" />
+                                            <ComboBoxItem Content="High" Tag="High" />
+                                            <ComboBoxItem Content="Very high" Tag="VeryHigh" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="RememberVolumeToggle" Header="Remember volume between sessions"
+                                                  OnContent="On" OffContent="Off"
+                                                  Toggled="RememberVolumeToggle_Toggled" />
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Slider x:Name="CrossfadeDurationSlider" Minimum="0.5" Maximum="12"
+                                                Value="3" StepFrequency="0.5" IsEnabled="False"
+                                                ValueChanged="CrossfadeDurationSlider_ValueChanged" />
+                                        <TextBlock x:Name="CrossfadeDurationText" Grid.Column="1" Text="3.0 seconds"
+                                                   VerticalAlignment="Center" MinWidth="78" />
+                                    </Grid>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabViewItem>
+                        <TabViewItem Header="Downloads" IsClosable="False">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="10" Margin="8">
+                                    <TextBlock Text="Download folder" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="DownloadFolderBox" Grid.Column="0" IsReadOnly="True" />
+                                        <Button Grid.Column="1" Content="Change" Click="ChangeFolder_Click" />
+                                    </Grid>
+                                    <TextBlock Text="Preferred download format" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,8,0,0" />
+                                    <ComboBox x:Name="PreferredDownloadFormatBox" Width="240" HorizontalAlignment="Left"
+                                              SelectionChanged="PreferredDownloadFormatBox_SelectionChanged">
+                                        <ComboBoxItem Content="Ask every time" Tag="ask" />
+                                        <ComboBoxItem Content="MP3" Tag="mp3" />
+                                        <ComboBoxItem Content="WAV" Tag="wav" />
+                                    </ComboBox>
+                                    <TextBlock Text="MP3 quality" FontSize="12" FontWeight="SemiBold" Margin="0,8,0,0" />
+                                    <ComboBox x:Name="Mp3BitrateBox" Width="240" HorizontalAlignment="Left"
+                                              SelectionChanged="Mp3BitrateBox_SelectionChanged">
+                                        <ComboBoxItem Content="128 kbps" Tag="128" />
+                                        <ComboBoxItem Content="192 kbps" Tag="192" />
+                                        <ComboBoxItem Content="256 kbps" Tag="256" />
+                                        <ComboBoxItem Content="320 kbps" Tag="320" />
+                                    </ComboBox>
+                                    <ToggleSwitch x:Name="OrganizeDownloadsToggle" Header="Organize downloads into artist folders"
+                                                  OnContent="On" OffContent="Off"
+                                                  Toggled="OrganizeDownloadsToggle_Toggled" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabViewItem>
+                        <TabViewItem Header="Search" IsClosable="False">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="14" Margin="8">
+                                    <ToggleSwitch x:Name="SearchYouTubeToggle" Header="Search YouTube Music"
+                                                  OnContent="On" OffContent="Off" IsOn="True"
+                                                  Toggled="SearchSourceToggle_Toggled" />
+                                    <ToggleSwitch x:Name="SearchSoundCloudToggle" Header="Search SoundCloud"
+                                                  OnContent="On" OffContent="Off" IsOn="True"
+                                                  Toggled="SearchSourceToggle_Toggled" />
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Results per source" FontSize="12" FontWeight="SemiBold" />
+                                        <Grid ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Slider x:Name="SearchResultCountSlider" Minimum="5" Maximum="50"
+                                                    Value="25" StepFrequency="5"
+                                                    ValueChanged="SearchResultCountSlider_ValueChanged" />
+                                            <TextBlock x:Name="SearchResultCountText" Grid.Column="1" Text="25"
+                                                       VerticalAlignment="Center" MinWidth="30" />
+                                        </Grid>
+                                    </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabViewItem>
+                        <TabViewItem Header="Discord" IsClosable="False">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="10" Margin="8">
+                                    <ToggleSwitch x:Name="DiscordActivityToggle" Header="Show what I’m listening to on Discord"
+                                                  OnContent="On" OffContent="Off" IsOn="True"
+                                                  Toggled="DiscordActivityToggle_Toggled" />
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:Name="ConnectDiscordButton" Content="Connect to Discord" Click="AuthorizeDiscord_Click" />
+                                        <Button x:Name="DisconnectDiscordButton" Content="Disconnect from Discord"
+                                                Click="DisconnectDiscord_Click" Visibility="Collapsed" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="DiscordActivityStatus" Text="Discord activity is off."
+                                               TextWrapping="Wrap" Visibility="Collapsed" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabViewItem>
+                    </TabView>
+                    <Button Grid.Row="2" Content="Save settings" Click="SaveSettings_Click"
+                            HorizontalAlignment="Left" Margin="0,12,0,0" />
                 </Grid>
             </Grid>
 
@@ -534,12 +675,16 @@
         </Grid>
 
         <!-- ============ PLAYER BAR ============ -->
-        <Border Grid.Row="1" Grid.Column="1"
+        <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
                 Background="{StaticResource GlassPanelBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="0,1,0,0"
-                Padding="24,14">
-            <Grid x:Name="PlayerLayout" ColumnSpacing="20">
+                BorderThickness="0,1,0,0" Padding="0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="76" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+            <Grid x:Name="PlayerLayout" Grid.Column="1" Padding="24,14" ColumnSpacing="20">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="0" />
@@ -604,6 +749,14 @@
                                 ToolTipService.ToolTip="Repeat off">
                             <FontIcon x:Name="RepeatIcon" Glyph="&#xE8EE;" FontSize="15" />
                         </Button>
+                <Button x:Name="FavoriteButton" Style="{StaticResource TransportButton}"
+                                Click="FavoriteCurrent_Click" ToolTipService.ToolTip="Add to favorites">
+                            <FontIcon x:Name="FavoriteIcon" Glyph="&#xEB51;" FontSize="15" />
+                        </Button>
+                        <Button x:Name="AddToPlaylistButton" Style="{StaticResource TransportButton}"
+                                Click="AddCurrentToPlaylist_Click" ToolTipService.ToolTip="Add to playlist">
+                            <FontIcon Glyph="&#xE710;" FontSize="15" />
+                        </Button>
                         <Button x:Name="DownloadButton" Style="{StaticResource TransportButton}" Click="Download_Click"
                                 ToolTipService.ToolTip="Download this track">
                             <FontIcon Glyph="&#xE896;" FontSize="15" />
@@ -640,6 +793,8 @@
                             ValueChanged="VolumeSlider_ValueChanged" />
                 </StackPanel>
             </Grid>
+            </Grid>
         </Border>
     </Grid>
 </Window>
+

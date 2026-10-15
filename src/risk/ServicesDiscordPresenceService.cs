@@ -52,8 +52,7 @@ public sealed class DiscordPresenceService : IDisposable
                 (artwork.Scheme == Uri.UriSchemeHttps || artwork.Scheme == Uri.UriSchemeHttp))
                 activity["assets"] = new Dictionary<string, string>
                 {
-                    ["large_image"] = Clip(artwork.AbsoluteUri, 300),
-                    ["large_text"] = Clip(title, 128)
+                    ["large_image"] = Clip(artwork.AbsoluteUri, 300)
                 };
 
             using var response = await SendCommandAsync("SET_ACTIVITY", new
@@ -228,3 +227,4 @@ public sealed class DiscordPresenceService : IDisposable
     static string Clip(string value, int max) => value.Length <= max ? value : value[..max];
     public void Dispose() { _pipe?.Dispose(); _gate.Dispose(); }
 }
+

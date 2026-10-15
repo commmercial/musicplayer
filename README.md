@@ -14,6 +14,6 @@ Open Discord Desktop, enable **Show what I’m listening to on Discord** in Risk
 ## Notes
 
 - Music availability depends on the source service and its access restrictions.
-- User settings and playlists remain under `%LOCALAPPDATA%\VYBE`.
+- User settings and playlists remain under `%LOCALAPPDATA%\risk`.
 
 

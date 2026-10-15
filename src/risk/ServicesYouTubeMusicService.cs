@@ -10,9 +10,19 @@ public sealed class YouTubeMusicService
 {
     readonly YouTubeMusicClient _client = new();
     readonly Dictionary<string, string> _urlCache = new();
+    readonly Dictionary<string, double> _loudnessCache = new();
+    readonly Dictionary<string, (DateTimeOffset CreatedAt, List<TrackItem> Tracks)> _searchCache = new(StringComparer.OrdinalIgnoreCase);
+    readonly object _searchCacheGate = new();
 
     public async Task<List<TrackItem>> SearchAsync(string query, int limit = 25, CancellationToken ct = default)
     {
+        var cacheKey = $"{query.Trim()}|{limit}";
+        lock (_searchCacheGate)
+        {
+            if (_searchCache.TryGetValue(cacheKey, out var cached) && DateTimeOffset.UtcNow - cached.CreatedAt < TimeSpan.FromSeconds(45))
+                return cached.Tracks.Select(CloneTrack).ToList();
+        }
+
         var page = _client.SearchAsync(query, SearchCategory.Songs);
         var items = await page.FetchItemsAsync(0, limit, ct).ConfigureAwait(false);
 
@@ -35,8 +45,37 @@ public sealed class YouTubeMusicService
                 ArtworkUrl = Largest(song.Thumbnails)
             });
         }
+        lock (_searchCacheGate)
+        {
+            if (_searchCache.Count >= 100)
+            {
+                foreach (var expired in _searchCache.Where(entry => DateTimeOffset.UtcNow - entry.Value.CreatedAt >= TimeSpan.FromSeconds(45))
+                             .Select(entry => entry.Key).ToArray())
+                    _searchCache.Remove(expired);
+                if (_searchCache.Count >= 100) _searchCache.Clear();
+            }
+            _searchCache[cacheKey] = (DateTimeOffset.UtcNow, results.Select(CloneTrack).ToList());
+        }
         return results;
     }
+
+    static TrackItem CloneTrack(TrackItem track) => new()
+    {
+        Title = track.Title,
+        Subtitle = track.Subtitle,
+        Path = track.Path,
+        Source = track.Source,
+        DurationLabel = track.DurationLabel,
+        WebUrl = track.WebUrl,
+        Id = track.Id,
+        ArtistName = track.ArtistName,
+        ArtistId = track.ArtistId,
+        ArtistUrl = track.ArtistUrl,
+        IsOnline = track.IsOnline,
+        ArtworkUrl = track.ArtworkUrl,
+        Artwork = track.Artwork,
+        ResolvedAt = track.ResolvedAt
+    };
 
     public async Task<(string Name, List<TrackItem> Tracks)> GetArtistTracksAsync(
         string artistId, CancellationToken ct = default)
@@ -84,31 +123,44 @@ public sealed class YouTubeMusicService
         return (info.Name, info.Description ?? "", Largest(info.Thumbnails), tracks);
     }
 
-    public async Task<string> ResolveStreamUrlAsync(string videoId, bool force = false, CancellationToken ct = default)
+    public double? GetLoudnessDb(string videoId) =>
+        _loudnessCache.TryGetValue(videoId, out var loudness) && double.IsFinite(loudness) ? loudness : null;
+
+    public async Task<string> ResolveStreamUrlAsync(string videoId, bool force = false, CancellationToken ct = default,
+        string quality = "Auto")
     {
-        if (!force && _urlCache.TryGetValue(videoId, out var cached))
+        var cacheKey = videoId + "|" + quality;
+        if (!force && _urlCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
         var data = await _client.GetStreamingDataAsync(videoId, ct);
-
-        var best = data.StreamInfo
-            .OfType<AudioStreamInfo>()
-            .OrderByDescending(s => s.Bitrate)
-            .FirstOrDefault()
+        var best = SelectAudioStream(data.StreamInfo.OfType<AudioStreamInfo>(), quality)
             ?? throw new InvalidOperationException("YouTube returned no audio stream for this track.");
 
-        _urlCache[videoId] = best.Url;
+        _urlCache[cacheKey] = best.Url;
+        if (double.IsFinite(best.LoudnessDb)) _loudnessCache[videoId] = best.LoudnessDb;
         return best.Url;
     }
 
+    static AudioStreamInfo? SelectAudioStream(IEnumerable<AudioStreamInfo> streams, string quality)
+    {
+        var available = streams.OrderBy(stream => stream.Bitrate).ToArray();
+        if (available.Length == 0) return null;
+        return quality switch
+        {
+            "Low" => available[0],
+            "Normal" => available.OrderBy(stream => Math.Abs(stream.Bitrate - 96000)).First(),
+            "High" => available.OrderBy(stream => Math.Abs(stream.Bitrate - 160000)).First(),
+            _ => available[available.Length - 1]
+        };
+    }
+
     /// <summary>Downloads straight from the API stream - no yt-dlp, no ffmpeg.</summary>
-    public async Task<string> DownloadAsync(string videoId, string folder, IProgress<double>? progress = null, CancellationToken ct = default)
+    public async Task<string> DownloadAsync(string videoId, string folder, IProgress<double>? progress = null,
+        CancellationToken ct = default, string quality = "Auto")
     {
         var data = await _client.GetStreamingDataAsync(videoId, ct);
-        var best = data.StreamInfo
-            .OfType<AudioStreamInfo>()
-            .OrderByDescending(s => s.Bitrate)
-            .FirstOrDefault()
+        var best = SelectAudioStream(data.StreamInfo.OfType<AudioStreamInfo>(), quality)
             ?? throw new InvalidOperationException("No audio stream available.");
 
         var safe = Sanitize(videoId);

@@ -41,7 +41,7 @@ public static class MediaDownloader
     }
 
     public static async Task<string> ConvertAudioAsync(string sourcePath, string folder, string baseName,
-        string format, CancellationToken ct = default)
+        string format, CancellationToken ct = default, int mp3Bitrate = 320)
     {
         format = format.ToLowerInvariant();
         if (format is not ("mp3" or "wav")) throw new ArgumentOutOfRangeException(nameof(format));
@@ -71,7 +71,7 @@ public static class MediaDownloader
             start.ArgumentList.Add("-codec:a");
             start.ArgumentList.Add("libmp3lame");
             start.ArgumentList.Add("-b:a");
-            start.ArgumentList.Add("320k");
+            start.ArgumentList.Add(Math.Clamp(mp3Bitrate, 128, 320) + "k");
         }
         else
         {
@@ -135,3 +135,4 @@ public static class MediaDownloader
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 }
+

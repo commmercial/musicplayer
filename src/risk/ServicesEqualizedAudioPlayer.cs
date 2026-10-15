@@ -17,6 +17,8 @@ public sealed class EqualizedAudioPlayer : IDisposable
     double _volume = 0.56;
     double _currentGain = 1;
     double _fadingGain = 1;
+    double _currentNormalizationGain = 1;
+    double _fadingNormalizationGain = 1;
     bool _playing;
     int _playGeneration;
 
@@ -41,8 +43,8 @@ public sealed class EqualizedAudioPlayer : IDisposable
         set
         {
             _volume = Math.Clamp(value, 0, 1);
-            if (_input is not null) _input.OutgoingGain = _volume * _currentGain;
-            if (_fadingInput is not null) _fadingInput.OutgoingGain = _volume * _fadingGain;
+            if (_input is not null) _input.OutgoingGain = _volume * _currentGain * _currentNormalizationGain;
+            if (_fadingInput is not null) _fadingInput.OutgoingGain = _volume * _fadingGain * _fadingNormalizationGain;
         }
     }
 
@@ -64,9 +66,11 @@ public sealed class EqualizedAudioPlayer : IDisposable
         _equalizer = new EqualizerEffectDefinition(_graph);
     }
 
-    public async Task PlayAsync(string sourceUri, bool crossfade = false, TimeSpan? fadeDuration = null)
+    public async Task PlayAsync(string sourceUri, bool crossfade = false, TimeSpan? fadeDuration = null,
+        double normalizationGain = 1)
     {
         var generation = Interlocked.Increment(ref _playGeneration);
+        normalizationGain = Math.Clamp(normalizationGain, 0.4, 1.75);
         CancelFade();
         await InitializeAsync();
         if (generation != Volatile.Read(ref _playGeneration)) return;
@@ -80,6 +84,8 @@ public sealed class EqualizedAudioPlayer : IDisposable
             _input = null;
             previous = null;
             _currentGain = 1;
+            _currentNormalizationGain = normalizationGain;
+            _fadingNormalizationGain = 1;
             _pausedPosition = TimeSpan.Zero;
             _playing = false;
         }
@@ -110,28 +116,31 @@ public sealed class EqualizedAudioPlayer : IDisposable
             {
                 _fadingInput = previous;
                 _fadingGain = _currentGain;
+                _fadingNormalizationGain = _currentNormalizationGain;
+                _currentNormalizationGain = normalizationGain;
                 _currentGain = 0;
                 _input.OutgoingGain = 0;
-                previous.OutgoingGain = _volume * _fadingGain;
+                previous.OutgoingGain = _volume * _fadingGain * _fadingNormalizationGain;
                 var duration = fadeDuration ?? TimeSpan.FromSeconds(3);
                 if (duration < TimeSpan.FromMilliseconds(100))
                 {
                     DisposeNode(_fadingInput);
                     _fadingInput = null;
                     _currentGain = 1;
-                    _input.OutgoingGain = _volume;
+                    _input.OutgoingGain = _volume * _currentNormalizationGain;
                 }
                 else
                 {
                     var cancellation = new CancellationTokenSource();
                     _fadeCancellation = cancellation;
-                    _ = RunCrossfadeAsync(previous, next, generation, duration, _fadingGain, cancellation);
+                    _ = RunCrossfadeAsync(previous, next, generation, duration, _fadingGain,
+                        _fadingNormalizationGain, cancellation);
                 }
             }
             else
             {
                 _currentGain = 1;
-                next.OutgoingGain = _volume;
+                next.OutgoingGain = _volume * _currentNormalizationGain;
             }
             next.Start();
         }
@@ -152,7 +161,8 @@ public sealed class EqualizedAudioPlayer : IDisposable
     }
 
     async Task RunCrossfadeAsync(MediaSourceAudioInputNode outgoing, MediaSourceAudioInputNode incoming,
-        int generation, TimeSpan duration, double outgoingStartGain, CancellationTokenSource cancellation)
+        int generation, TimeSpan duration, double outgoingStartGain, double outgoingNormalizationGain,
+        CancellationTokenSource cancellation)
     {
         var started = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -161,17 +171,18 @@ public sealed class EqualizedAudioPlayer : IDisposable
             {
                 var progress = Math.Clamp(started.Elapsed.TotalMilliseconds / duration.TotalMilliseconds, 0, 1);
                 _currentGain = progress;
-                incoming.OutgoingGain = _volume * progress;
+                incoming.OutgoingGain = _volume * progress * _currentNormalizationGain;
                 _fadingGain = 1 - progress;
-                outgoing.OutgoingGain = _volume * (outgoingStartGain * (1 - progress));
+                outgoing.OutgoingGain = _volume * (outgoingStartGain * (1 - progress) * outgoingNormalizationGain);
                 await Task.Delay(25, cancellation.Token);
             }
             if (generation == Volatile.Read(ref _playGeneration) && _input == incoming)
             {
                 _currentGain = 1;
                 _fadingGain = 1;
-                incoming.OutgoingGain = _volume;
+                incoming.OutgoingGain = _volume * _currentNormalizationGain;
                 if (_fadingInput == outgoing) _fadingInput = null;
+                _fadingNormalizationGain = 1;
                 DisposeNode(outgoing);
             }
         }
@@ -201,7 +212,7 @@ public sealed class EqualizedAudioPlayer : IDisposable
     {
         if (_input is null || _playing) return;
         if (_pausedPosition > TimeSpan.Zero) _input.Seek(_pausedPosition);
-        _input.OutgoingGain = _volume;
+        _input.OutgoingGain = _volume * _currentNormalizationGain;
         _input.Start();
         _currentGain = 1;
         _playing = true;
@@ -243,7 +254,7 @@ public sealed class EqualizedAudioPlayer : IDisposable
                 if (_input is not null)
                 {
                     _currentGain = 1;
-                    _input.OutgoingGain = _volume;
+                    _input.OutgoingGain = _volume * _currentNormalizationGain;
                 }
                 CancelFade();
             }
@@ -286,3 +297,4 @@ public sealed class EqualizedAudioPlayer : IDisposable
         _graph?.Dispose();
     }
 }
+

@@ -319,7 +319,6 @@
                                             <ColumnDefinition Width="58" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <Border Width="54" Height="54" CornerRadius="7" Background="#30303030">
                                             <Grid>
@@ -330,14 +329,16 @@
                                         </Border>
                                         <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                        <Button Grid.Column="2" Width="34" Height="34" Padding="0"
-                                                Click="EditPlaylist_Click" ToolTipService.ToolTip="Edit playlist">
-                                            <FontIcon Glyph="&#xE70F;" FontSize="13" />
-                                        </Button>
-                                        <Button Grid.Column="3" Width="34" Height="34" Padding="0"
-                                                Click="DeletePlaylist_Click" ToolTipService.ToolTip="Delete playlist">
-                                            <FontIcon Glyph="&#xE711;" FontSize="13" />
-                                        </Button>
+                                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
+                                            <Button Width="34" Height="34" Padding="0"
+                                                    Click="EditPlaylist_Click" ToolTipService.ToolTip="Edit playlist">
+                                                <FontIcon Glyph="&#xE70F;" FontSize="13" />
+                                            </Button>
+                                            <Button Width="34" Height="34" Padding="0"
+                                                    Click="DeletePlaylist_Click" ToolTipService.ToolTip="Delete playlist">
+                                                <FontIcon Glyph="&#xE711;" FontSize="13" />
+                                            </Button>
+                                        </StackPanel>
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -429,9 +430,9 @@
                                                 <TextBlock Text="{Binding Subtitle}" TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
                                             <TextBlock Grid.Column="2" Text="{Binding DurationLabel}" VerticalAlignment="Center" />
-                                            <Button Grid.Column="3" Width="36" Height="36" Padding="0"
+                                            <Button Grid.Column="3" Width="34" Height="34" Padding="0" Margin="10,0,0,0"
                                                     Click="RemovePlaylistTrack_Click" ToolTipService.ToolTip="Remove from playlist">
-                                                <FontIcon Glyph="&#xE738;" FontSize="13" />
+                                                <FontIcon Glyph="&#xE711;" FontSize="13" />
                                             </Button>
                                         </Grid>
                                     </DataTemplate>
@@ -642,4 +643,3 @@
         </Border>
     </Grid>
 </Window>
-

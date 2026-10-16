@@ -200,7 +200,6 @@
                                         <ColumnDefinition Width="36" />
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
 
                                     <Border Grid.Column="0" Width="44" Height="44" CornerRadius="8"
@@ -225,11 +224,7 @@
                                                 ToolTipService.ToolTip="Open artist profile" />
                                     </StackPanel>
 
-                                    <TextBlock Grid.Column="3" Text="{Binding Source}" FontSize="10" FontWeight="SemiBold"
-                                               VerticalAlignment="Center" Margin="0,0,4,0"
-                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-
-                                    <TextBlock Grid.Column="4" Text="{Binding DurationLabel}" FontSize="12"
+                                    <TextBlock Grid.Column="3" Text="{Binding DurationLabel}" FontSize="12"
                                                VerticalAlignment="Center" Width="46" TextAlignment="Right"
                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 </Grid>
@@ -366,7 +361,8 @@
                                         </Grid.ColumnDefinitions>
                                         <Border Width="54" Height="54" CornerRadius="7" Background="#30303030">
                                             <Grid>
-                                                <TextBlock Text="♫" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                <TextBlock Text="♫" Visibility="{Binding CoverPlaceholderVisibility}"
+                                                           FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"
                                                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                                                 <Image Source="{Binding Cover}" Stretch="UniformToFill" />
                                             </Grid>
@@ -551,29 +547,6 @@
                                     <ToggleSwitch x:Name="AutoplaySimilarToggle" Header="Autoplay similar tracks when the queue ends"
                                                   OnContent="On" OffContent="Off" IsOn="True"
                                                   Toggled="AutoplaySimilarToggle_Toggled" />
-                                    <ToggleSwitch x:Name="NormalizeVolumeToggle" Header="Normalize volume (YouTube Music)"
-                                                  OnContent="On" OffContent="Off" IsOn="True"
-                                                  Toggled="NormalizeVolumeToggle_Toggled" />
-                                    <StackPanel Spacing="4" Margin="0,0,0,4">
-                                        <TextBlock Text="Volume normalization level" FontSize="12" FontWeight="SemiBold" />
-                                        <ComboBox x:Name="NormalizationLevelBox" Width="220" HorizontalAlignment="Left"
-                                                  SelectionChanged="NormalizationLevelBox_SelectionChanged">
-                                            <ComboBoxItem Content="Quiet" Tag="Quiet" />
-                                            <ComboBoxItem Content="Normal" Tag="Normal" />
-                                            <ComboBoxItem Content="Loud" Tag="Loud" />
-                                        </ComboBox>
-                                    </StackPanel>
-                                    <StackPanel Spacing="4" Margin="0,0,0,4">
-                                        <TextBlock Text="Streaming quality (YouTube Music)" FontSize="12" FontWeight="SemiBold" />
-                                        <ComboBox x:Name="StreamingQualityBox" Width="220" HorizontalAlignment="Left"
-                                                  SelectionChanged="StreamingQualityBox_SelectionChanged">
-                                            <ComboBoxItem Content="Automatic" Tag="Auto" />
-                                            <ComboBoxItem Content="Low" Tag="Low" />
-                                            <ComboBoxItem Content="Normal" Tag="Normal" />
-                                            <ComboBoxItem Content="High" Tag="High" />
-                                            <ComboBoxItem Content="Very high" Tag="VeryHigh" />
-                                        </ComboBox>
-                                    </StackPanel>
                                     <ToggleSwitch x:Name="RememberVolumeToggle" Header="Remember volume between sessions"
                                                   OnContent="On" OffContent="Off"
                                                   Toggled="RememberVolumeToggle_Toggled" />
@@ -623,32 +596,6 @@
                                     <ToggleSwitch x:Name="OrganizeDownloadsToggle" Header="Organize downloads into artist folders"
                                                   OnContent="On" OffContent="Off"
                                                   Toggled="OrganizeDownloadsToggle_Toggled" />
-                                </StackPanel>
-                            </ScrollViewer>
-                        </TabViewItem>
-                        <TabViewItem Header="Search" IsClosable="False">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <StackPanel Spacing="14" Margin="8">
-                                    <ToggleSwitch x:Name="SearchYouTubeToggle" Header="Search YouTube Music"
-                                                  OnContent="On" OffContent="Off" IsOn="True"
-                                                  Toggled="SearchSourceToggle_Toggled" />
-                                    <ToggleSwitch x:Name="SearchSoundCloudToggle" Header="Search SoundCloud"
-                                                  OnContent="On" OffContent="Off" IsOn="True"
-                                                  Toggled="SearchSourceToggle_Toggled" />
-                                    <StackPanel Spacing="4">
-                                        <TextBlock Text="Results per source" FontSize="12" FontWeight="SemiBold" />
-                                        <Grid ColumnSpacing="12">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <Slider x:Name="SearchResultCountSlider" Minimum="5" Maximum="50"
-                                                    Value="25" StepFrequency="5"
-                                                    ValueChanged="SearchResultCountSlider_ValueChanged" />
-                                            <TextBlock x:Name="SearchResultCountText" Grid.Column="1" Text="25"
-                                                       VerticalAlignment="Center" MinWidth="30" />
-                                        </Grid>
-                                    </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>
                         </TabViewItem>
@@ -800,4 +747,5 @@
         </Border>
     </Grid>
 </Window>
+
 

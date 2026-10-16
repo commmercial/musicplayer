@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Collections.Specialized;
@@ -30,10 +31,10 @@ public sealed class TrackItem : INotifyPropertyChanged
     public string Title { get; set; } = "Unknown track";
     public string Subtitle { get; set; } = "";
     public string Path { get; set; } = "";          // local file path, or resolved stream URL
-    public string Source { get; set; } = "LOCAL";   // LOCAL | YT MUSIC | SOUNDCLOUD
+    public string Source { get; set; } = "LOCAL";   // LOCAL | SOUNDCLOUD | SPOTIFY (matched to SoundCloud on playback)
     public string DurationLabel { get; set; } = "";
     public string WebUrl { get; set; } = "";
-    public string Id { get; set; } = "";            // YouTube video id, or SoundCloud permalink
+    public string Id { get; set; } = "";            // SoundCloud permalink or Spotify identifier
     public string ArtistName { get; set; } = "";
     public string ArtistId { get; set; } = "";
     public string ArtistUrl { get; set; } = "";
@@ -74,7 +75,19 @@ public sealed class PlaylistItem : INotifyPropertyChanged
     public string CoverUrl { get => _coverUrl; set { _coverUrl = value; OnPropertyChanged(); } }
     public List<TrackItem> Tracks { get; set; } = new();
     [JsonIgnore]
-    public ImageSource? Cover { get => _cover; set { _cover = value; OnPropertyChanged(); } }
+    public ImageSource? Cover
+    {
+        get => _cover;
+        set
+        {
+            _cover = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(CoverPlaceholderVisibility));
+        }
+    }
+    [JsonIgnore]
+    public Visibility CoverPlaceholderVisibility => _cover is null ? Visibility.Visible : Visibility.Collapsed;
     void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
+
 

@@ -34,8 +34,6 @@ public sealed class DiscordPresenceService : IDisposable
         await _gate.WaitAsync();
         try
         {
-            await EnsureConnectedAsync(applicationId);
-
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var startedAt = Math.Max(0, now - Math.Max(0, (long)position.TotalSeconds));
             var timestamps = new Dictionary<string, long> { ["start"] = startedAt };
@@ -55,11 +53,28 @@ public sealed class DiscordPresenceService : IDisposable
                     ["large_image"] = Clip(artwork.AbsoluteUri, 300)
                 };
 
-            using var response = await SendCommandAsync("SET_ACTIVITY", new
+            var command = new Dictionary<string, object?>
             {
-                pid = Environment.ProcessId,
-                activity
-            });
+                ["pid"] = Environment.ProcessId,
+                ["activity"] = activity
+            };
+
+            // Discord can close IPC while its pipe still briefly reports connected
+            // (for example when it restarts). Reconnect and retry once on transport
+            // failures so the next song does not require a manual reconnect.
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    await EnsureConnectedAsync(applicationId);
+                    using var response = await SendCommandAsync("SET_ACTIVITY", command);
+                    break;
+                }
+                catch (Exception ex) when (attempt == 0 && ex is IOException or EndOfStreamException or OperationCanceledException)
+                {
+                    await DisconnectPipeAsync();
+                }
+            }
         }
         catch
         {
@@ -76,10 +91,10 @@ public sealed class DiscordPresenceService : IDisposable
         {
             if (_pipe?.IsConnected == true)
             {
-                using var response = await SendCommandAsync("SET_ACTIVITY", new
+                using var response = await SendCommandAsync("SET_ACTIVITY", new Dictionary<string, object?>
                 {
-                    pid = Environment.ProcessId,
-                    activity = (object?)null
+                    ["pid"] = Environment.ProcessId,
+                    ["activity"] = null
                 });
             }
         }
@@ -96,10 +111,10 @@ public sealed class DiscordPresenceService : IDisposable
             {
                 try
                 {
-                    using var response = await SendCommandAsync("SET_ACTIVITY", new
+                    using var response = await SendCommandAsync("SET_ACTIVITY", new Dictionary<string, object?>
                     {
-                        pid = Environment.ProcessId,
-                        activity = (object?)null
+                        ["pid"] = Environment.ProcessId,
+                        ["activity"] = null
                     });
                 }
                 catch { }
@@ -115,6 +130,7 @@ public sealed class DiscordPresenceService : IDisposable
         if (_pipe?.IsConnected == true && _applicationId == appId) return;
         await DisconnectPipeAsync();
         Exception? last = null;
+        Exception? actionableFailure = null;
         for (var i = 0; i < 10; i++)
         {
             var candidate = new NamedPipeClientStream(".", $"discord-ipc-{i}", PipeDirection.InOut, PipeOptions.Asynchronous);
@@ -123,7 +139,11 @@ public sealed class DiscordPresenceService : IDisposable
                 await candidate.ConnectAsync(500);
                 _pipe = candidate;
                 _applicationId = appId;
-                await WriteFrameAsync(0, JsonSerializer.SerializeToUtf8Bytes(new { v = 1, client_id = appId }));
+                await WriteFrameAsync(0, JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+                {
+                    ["v"] = 1,
+                    ["client_id"] = appId
+                }));
                 var ready = await ReadFrameAsync(candidate, TimeSpan.FromSeconds(3));
                 using var document = JsonDocument.Parse(ready.Payload);
                 if (document.RootElement.TryGetProperty("evt", out var evt) && evt.GetString() == "ERROR")
@@ -135,18 +155,28 @@ public sealed class DiscordPresenceService : IDisposable
             catch (Exception ex)
             {
                 last = ex;
+                if (ex is UnauthorizedAccessException or System.Security.SecurityException ||
+                    ex is not TimeoutException and not FileNotFoundException)
+                    actionableFailure ??= ex;
                 candidate.Dispose();
                 _pipe = null;
             }
         }
-        throw new IOException("Could not connect to Discord Desktop. Open the Discord app and try again.", last);
+        var cause = actionableFailure ?? last;
+        var details = cause is null ? "" : $" Details: {cause.GetType().Name}: {cause.Message}";
+        throw new IOException("Could not connect to Discord Desktop. Open the Discord app and try again." + details, cause);
     }
 
     async Task<JsonDocument> SendCommandAsync(string command, object args)
     {
         var pipe = _pipe ?? throw new IOException("Discord is not connected.");
         var nonce = Guid.NewGuid().ToString("N");
-        await WriteFrameAsync(1, JsonSerializer.SerializeToUtf8Bytes(new { cmd = command, args, nonce }));
+        await WriteFrameAsync(1, JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+        {
+            ["cmd"] = command,
+            ["args"] = args,
+            ["nonce"] = nonce
+        }));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
         while (true)
         {
@@ -227,4 +257,5 @@ public sealed class DiscordPresenceService : IDisposable
     static string Clip(string value, int max) => value.Length <= max ? value : value[..max];
     public void Dispose() { _pipe?.Dispose(); _gate.Dispose(); }
 }
+
 

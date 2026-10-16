@@ -93,6 +93,11 @@ public sealed class EqualizedAudioPlayer : IDisposable
         try
         {
             var source = MediaSource.CreateFromUri(new Uri(sourceUri));
+            source.OpenOperationCompleted += (sender, args) =>
+            {
+                if (generation == Volatile.Read(ref _playGeneration) && args.Error is not null)
+                    PlaybackFailed?.Invoke("Windows could not open this audio stream. The provider may have expired the link or blocked the connection; try the track again.");
+            };
             var result = await _graph!.CreateMediaSourceAudioInputNodeAsync(source);
             if (result.Status.ToString() != "Success")
                 throw new InvalidOperationException($"Windows could not decode this track ({result.Status}).");
@@ -297,4 +302,5 @@ public sealed class EqualizedAudioPlayer : IDisposable
         _graph?.Dispose();
     }
 }
+
 

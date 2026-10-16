@@ -20,7 +20,6 @@ public sealed partial class MainWindow : Window
 {
     const string SharedDiscordApplicationId = "1540121277036109854";
     readonly EqualizedAudioPlayer _player = new();
-    readonly YouTubeMusicService _yt = new();
     readonly SoundCloudService _sc = new();
     readonly SpotifyPlaylistService _spotify = new();
     readonly DiscordPresenceService _discord = new();
@@ -52,18 +51,13 @@ public sealed partial class MainWindow : Window
     DateTimeOffset _discordDurationRetryAt;
     bool _crossfadeEnabled;
     double _crossfadeSeconds = 3;
-    bool _searchYouTubeMusic = true;
-    bool _searchSoundCloud = true;
     bool _rememberVolume;
     bool _startWithWindows;
     bool _autoplaySimilarTracks = true;
-    bool _normalizeVolume = true;
     bool _organizeDownloadsByArtist;
-    int _searchResultCount = 25;
+    const int SearchResultCount = 25;
     int _mp3Bitrate = 320;
     string _preferredDownloadFormat = "ask";
-    string _normalizationLevel = "Normal";
-    string _streamingQuality = "Auto";
     Windows.UI.Color _themeAccent = Windows.UI.Color.FromArgb(255, 125, 211, 252);
     bool _lightTheme;
     bool _initializing = true;
@@ -352,84 +346,24 @@ public sealed partial class MainWindow : Window
 
                 if (host.Contains("youtube.com") || host.Contains("youtu.be"))
                 {
-                    var id = ExtractVideoId(query);
-                    if (id is not null)
-                    {
-                        HomeHeading.Text = "YouTube Music link";
-                        var item = new TrackItem
-                        {
-                            Title = "YouTube track",
-                            Subtitle = "YouTube Music",
-                            Id = id,
-                            WebUrl = "https://music.youtube.com/watch?v=" + id,
-                            Source = "YT MUSIC",
-                            IsOnline = true,
-                            ArtworkUrl = $"https://i.ytimg.com/vi/{id}/mqdefault.jpg"
-                        };
-                        _results.Add(item);
-                        HydrateArtwork(new[] { item });
-                        StatusText.Text = "Ready — select it to play.";
-                        return;
-                    }
+                    StatusText.Text = "YouTube links aren’t supported. Search for the track by name on SoundCloud.";
+                    return;
                 }
+
             }
 
-            // Otherwise: search both sources in parallel.
+            // Search SoundCloud only.
             HomeHeading.Text = $"Results for \u201c{query}\u201d";
-            StatusText.Text = "Searching YouTube Music and SoundCloud…";
+            StatusText.Text = "Searching…";
 
-            if (!_searchYouTubeMusic && !_searchSoundCloud)
-            {
-                StatusText.Text = "Enable at least one search source in Settings.";
-                return;
-            }
-
-            var ytTask = _searchYouTubeMusic
-                ? _yt.SearchAsync(query, _searchResultCount, cancellationToken)
-                : Task.FromResult(new List<TrackItem>());
-            var scTask = _searchSoundCloud
-                ? _sc.SearchAsync(query, _searchResultCount, cancellationToken)
-                : Task.FromResult(new List<TrackItem>());
-            var remaining = new HashSet<Task<List<TrackItem>>> { ytTask, scTask };
-            var ytCount = 0;
-            var scCount = 0;
-            var errors = new List<string>();
-
-            while (remaining.Count > 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var completed = await Task.WhenAny(remaining);
-                remaining.Remove(completed);
-                try
-                {
-                    var tracks = await completed;
-                    if (!ReferenceEquals(_searchCancellation, searchCancellation)) return;
-                    if (ReferenceEquals(completed, ytTask)) ytCount = tracks.Count;
-                    else scCount = tracks.Count;
-                    _results.AddRange(tracks);
-                    HydrateArtwork(tracks);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    errors.Add(ex.Message);
-                }
-
-                if (remaining.Count > 0)
-                    StatusText.Text = _results.Count > 0
-                        ? $"Found {_results.Count} tracks; checking the other source…"
-                        : "Still searching the other source…";
-            }
-
-            if (errors.Count > 0 && _results.Count == 0)
-                StatusText.Text = "Search failed: " + string.Join("; ", errors);
-            else if (_results.Count == 0)
+            var tracks = await _sc.SearchAsync(query, SearchResultCount, cancellationToken);
+            if (!ReferenceEquals(_searchCancellation, searchCancellation)) return;
+            _results.AddRange(tracks);
+            HydrateArtwork(tracks);
+            if (_results.Count == 0)
                 StatusText.Text = "Nothing found. Try different wording.";
             else
-                StatusText.Text = $"{_results.Count} tracks · YouTube Music {ytCount} · SoundCloud {scCount}";
+                StatusText.Text = $"{_results.Count} tracks";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception ex)
@@ -443,12 +377,6 @@ public sealed partial class MainWindow : Window
                 _searchCancellation = null;
             searchCancellation.Dispose();
         }
-    }
-
-    static string? ExtractVideoId(string url)
-    {
-        var m = System.Text.RegularExpressions.Regex.Match(url, @"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})");
-        return m.Success ? m.Groups[1].Value : null;
     }
 
     void HydrateArtwork(IEnumerable<TrackItem> items)
@@ -505,9 +433,9 @@ public sealed partial class MainWindow : Window
         _profileTracks.Clear();
         try
         {
-            var result = track.Source == "YT MUSIC"
-                ? await _yt.GetArtistTracksAsync(track.ArtistId)
-                : await _sc.GetArtistTracksAsync(track.ArtistUrl);
+            if (string.IsNullOrWhiteSpace(track.ArtistUrl))
+                throw new InvalidOperationException("This artist profile is not available from SoundCloud.");
+            var result = await _sc.GetArtistTracksAsync(track.ArtistUrl);
             ProfileHeading.Text = result.Name;
             foreach (var item in result.Tracks) _profileTracks.Add(item);
             HydrateArtwork(_profileTracks);
@@ -566,21 +494,25 @@ public sealed partial class MainWindow : Window
         {
             string url = track.Path;
 
-            if (string.Equals(track.Source, "SPOTIFY", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(track.Source, "SPOTIFY", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(track.Source, "YT MUSIC", StringComparison.OrdinalIgnoreCase))
             {
-                StatusText.Text = $"Finding {track.Title} on YouTube Music…";
-                var matches = await _yt.SearchAsync($"{track.Title} {track.ArtistName}", 1);
+                StatusText.Text = $"Finding {track.Title} on SoundCloud…";
+                var matches = await _sc.SearchAsync($"{track.Title} {track.ArtistName}", 15);
                 if (token != _loadToken) return;
-                if (matches.Count == 0) throw new InvalidOperationException("No playable match was found for this Spotify track.");
-                var match = matches[0];
+                if (matches.Count == 0) throw new InvalidOperationException("No playable SoundCloud match was found for this track.");
+                var match = BestSoundCloudMatch(track, matches);
                 track.Source = match.Source;
                 track.Id = match.Id;
                 track.IsOnline = true;
                 track.WebUrl = match.WebUrl;
+                track.ArtistName = match.ArtistName;
+                track.ArtistUrl = match.ArtistUrl;
+                track.Subtitle = match.Subtitle;
                 track.ArtworkUrl = match.ArtworkUrl;
                 track.Artwork = match.Artwork;
                 track.DurationLabel = match.DurationLabel;
-                url = await _yt.ResolveStreamUrlAsync(track.Id, force: true, quality: _streamingQuality);
+                url = await _sc.ResolveStreamUrlAsync(track.Id);
                 track.Path = url;
                 track.ResolvedAt = DateTimeOffset.UtcNow;
                 NowArtwork.Source = track.Artwork;
@@ -590,9 +522,7 @@ public sealed partial class MainWindow : Window
             if (track.IsOnline && (forceResolve || !track.IsStreamFresh))
             {
                 StatusText.Text = $"Resolving {track.Source} stream…";
-                url = track.Source == "YT MUSIC"
-                    ? await _yt.ResolveStreamUrlAsync(track.Id, force: forceResolve, quality: _streamingQuality)
-                    : await _sc.ResolveStreamUrlAsync(track.Id);
+                url = await _sc.ResolveStreamUrlAsync(track.Id);
 
                 if (token != _loadToken) return;   // user clicked something else
 
@@ -600,8 +530,7 @@ public sealed partial class MainWindow : Window
                 track.ResolvedAt = DateTimeOffset.UtcNow;
             }
 
-            await _player.PlayAsync(url, autoplay && _crossfadeEnabled, TimeSpan.FromSeconds(_crossfadeSeconds),
-                GetNormalizationGain(track));
+            await _player.PlayAsync(url, autoplay && _crossfadeEnabled, TimeSpan.FromSeconds(_crossfadeSeconds), 1);
             if (token != _loadToken) return;
             if (!autoplay) _player.Pause();
             PlayIcon.Glyph = autoplay ? "\uE769" : "\uE768";
@@ -615,6 +544,26 @@ public sealed partial class MainWindow : Window
             _automaticFadeStarted = false;
             StatusText.Text = $"Couldn't play this track: {ex.Message}";
         }
+    }
+
+    static TrackItem BestSoundCloudMatch(TrackItem source, IReadOnlyList<TrackItem> matches)
+    {
+        static string Normalize(string value) => new(value.Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant).ToArray());
+
+        var title = Normalize(source.Title);
+        var artist = Normalize(source.ArtistName);
+        return matches.OrderByDescending(candidate =>
+        {
+            var candidateTitle = Normalize(candidate.Title);
+            var candidateArtist = Normalize(candidate.ArtistName);
+            var score = candidateTitle == title ? 100 :
+                candidateTitle.Contains(title, StringComparison.Ordinal) || title.Contains(candidateTitle, StringComparison.Ordinal) ? 40 : 0;
+            if (artist.Length > 0)
+                score += candidateArtist == artist ? 80 :
+                    candidateArtist.Contains(artist, StringComparison.Ordinal) || artist.Contains(candidateArtist, StringComparison.Ordinal) ? 30 : 0;
+            return score;
+        }).First();
     }
 
     void Play_Click(object sender, RoutedEventArgs e)
@@ -972,10 +921,7 @@ public sealed partial class MainWindow : Window
                 ? previous.Title + " similar songs"
                 : previous.ArtistName + " radio";
             var recommendations = new List<TrackItem>();
-            if (_searchYouTubeMusic)
-                recommendations.AddRange(await _yt.SearchAsync(query, Math.Min(_searchResultCount, 15)));
-            if (_searchSoundCloud)
-                recommendations.AddRange(await _sc.SearchAsync(query, Math.Min(_searchResultCount, 15)));
+            recommendations.AddRange(await _sc.SearchAsync(query, Math.Min(SearchResultCount, 15)));
             if (playbackToken != _loadToken) return;
 
             var candidates = recommendations
@@ -1003,20 +949,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    double GetNormalizationGain(TrackItem track)
-    {
-        if (!_normalizeVolume || !string.Equals(track.Source, "YT MUSIC", StringComparison.OrdinalIgnoreCase)) return 1;
-        var loudness = _yt.GetLoudnessDb(track.Id);
-        if (loudness is not double decibels) return 1;
-        var target = _normalizationLevel switch
-        {
-            "Quiet" => -20.0,
-            "Loud" => -11.0,
-            _ => -14.0
-        };
-        return Math.Clamp(Math.Pow(10, (target - decibels) / 20), 0.4, 1.75);
-    }
-
     int? GetAutomaticNextIndex()
     {
         if (_queue.Count < 2 || _index < 0) return null;
@@ -1029,12 +961,10 @@ public sealed partial class MainWindow : Window
         var nextIndex = GetAutomaticNextIndex();
         if (nextIndex is null || nextIndex == _index) return;
         var next = _queue[nextIndex.Value];
-        if (!next.IsOnline || next.IsStreamFresh) return;
+        if (!next.IsOnline || next.Source != "SOUNDCLOUD" || next.IsStreamFresh) return;
         try
         {
-            var url = next.Source == "YT MUSIC"
-                ? await _yt.ResolveStreamUrlAsync(next.Id, quality: _streamingQuality)
-                : await _sc.ResolveStreamUrlAsync(next.Id);
+            var url = await _sc.ResolveStreamUrlAsync(next.Id);
             if (playbackToken != _loadToken || !_queue.Contains(next)) return;
             next.Path = url;
             next.ResolvedAt = DateTimeOffset.UtcNow;
@@ -1339,9 +1269,13 @@ public sealed partial class MainWindow : Window
             {
                 sourcePath = track.Path;
             }
-            else if (track.Source == "YT MUSIC")
+            else if (track.Source is "SPOTIFY" or "YT MUSIC")
             {
-                sourcePath = await _yt.DownloadAsync(track.Id, workFolder, progress, quality: _streamingQuality);
+                var matches = await _sc.SearchAsync($"{track.Title} {track.ArtistName}", 15);
+                if (matches.Count == 0)
+                    throw new InvalidOperationException("No playable SoundCloud match was found for this track.");
+                var match = BestSoundCloudMatch(track, matches);
+                sourcePath = await _sc.ResolveStreamUrlAsync(match.Id);
             }
             else if (track.Source == "SOUNDCLOUD")
             {
@@ -1482,7 +1416,7 @@ public sealed partial class MainWindow : Window
 
     async void ImportPlaylist_Click(object sender, RoutedEventArgs e)
     {
-        var linkBox = new TextBox { PlaceholderText = "Paste a Spotify, SoundCloud, or YouTube Music playlist link", MinWidth = 420 };
+        var linkBox = new TextBox { PlaceholderText = "Paste a Spotify or SoundCloud playlist link", MinWidth = 420 };
         var dialog = new ContentDialog
         {
             Title = "Import playlist",
@@ -1503,9 +1437,7 @@ public sealed partial class MainWindow : Window
                 (name, description, artworkUrl, tracks) = await _spotify.GetPlaylistAsync(uri);
             else if (uri.Host.Contains("soundcloud.com", StringComparison.OrdinalIgnoreCase))
                 (name, description, artworkUrl, tracks) = await _sc.GetPlaylistAsync(uri.ToString());
-            else if (uri.Host.Contains("youtube.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Contains("youtu.be", StringComparison.OrdinalIgnoreCase))
-                (name, description, artworkUrl, tracks) = await _yt.GetPlaylistAsync(uri.ToString());
-            else throw new InvalidOperationException("Use a Spotify, SoundCloud, or YouTube Music playlist link.");
+            else throw new InvalidOperationException("Use a Spotify or SoundCloud playlist link.");
 
             var playlist = new PlaylistItem
             {
@@ -1521,7 +1453,7 @@ public sealed partial class MainWindow : Window
             PlaylistList.SelectedItem = null;
             OpenPlaylist(playlist);
             if (uri.Host.Contains("spotify", StringComparison.OrdinalIgnoreCase))
-                StatusText.Text = $"Imported {tracks.Count} Spotify tracks. Tracks play through matching YouTube Music versions; Spotify's public embed provides up to 50 tracks.";
+                StatusText.Text = $"Imported {tracks.Count} Spotify tracks. Tracks play through SoundCloud matches; Spotify's public embed provides up to 50 tracks.";
         }
         catch (Exception ex)
         {
@@ -1620,8 +1552,8 @@ public sealed partial class MainWindow : Window
         RefreshTrackRows();
         var tracksPage = new ScrollViewer { Content = trackRows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 300 };
         var tabs = new TabView { IsAddTabButtonVisible = false, MinHeight = 350 };
-        tabs.TabItems.Add(new TabViewItem { Header = "Basic info", Content = basicInfo });
-        tabs.TabItems.Add(new TabViewItem { Header = "Tracks", Content = tracksPage });
+        tabs.TabItems.Add(new TabViewItem { Header = "Basic info", Content = basicInfo, IsClosable = false });
+        tabs.TabItems.Add(new TabViewItem { Header = "Tracks", Content = tracksPage, IsClosable = false });
         var dialog = new ContentDialog
         {
             Title = "Edit playlist",
@@ -1797,17 +1729,11 @@ public sealed partial class MainWindow : Window
             CrossfadeEnabled = _crossfadeEnabled,
             CrossfadeSeconds = _crossfadeSeconds,
             AutoplaySimilarTracks = _autoplaySimilarTracks,
-            NormalizeVolume = _normalizeVolume,
-            NormalizationLevel = _normalizationLevel,
-            StreamingQuality = _streamingQuality,
             ShuffleEnabled = _shuffleEnabled,
             RepeatMode = _repeatMode,
             StartWithWindows = _startWithWindows,
             RememberVolume = _rememberVolume,
             Volume = VolumeSlider.Value,
-            SearchYouTubeMusic = _searchYouTubeMusic,
-            SearchSoundCloud = _searchSoundCloud,
-            SearchResultCount = _searchResultCount,
             PreferredDownloadFormat = _preferredDownloadFormat,
             Mp3Bitrate = _mp3Bitrate,
             OrganizeDownloadsByArtist = _organizeDownloadsByArtist,
@@ -1855,28 +1781,6 @@ public sealed partial class MainWindow : Window
         SaveSettings_Click(sender, e);
     }
 
-    void NormalizeVolumeToggle_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_initializing) return;
-        _normalizeVolume = NormalizeVolumeToggle.IsOn;
-        NormalizationLevelBox.IsEnabled = _normalizeVolume;
-        SaveSettings_Click(sender, e);
-    }
-
-    void NormalizationLevelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_initializing) return;
-        _normalizationLevel = (NormalizationLevelBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Normal";
-        SaveSettings_Click(sender, new RoutedEventArgs());
-    }
-
-    void StreamingQualityBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_initializing) return;
-        _streamingQuality = (StreamingQualityBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Auto";
-        SaveSettings_Click(sender, new RoutedEventArgs());
-    }
-
     void Mp3BitrateBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
@@ -1890,21 +1794,6 @@ public sealed partial class MainWindow : Window
         if (_initializing) return;
         _organizeDownloadsByArtist = OrganizeDownloadsToggle.IsOn;
         SaveSettings_Click(sender, e);
-    }
-
-    void SearchSourceToggle_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_initializing) return;
-        _searchYouTubeMusic = SearchYouTubeToggle.IsOn;
-        _searchSoundCloud = SearchSoundCloudToggle.IsOn;
-        SaveSettings_Click(sender, e);
-    }
-
-    void SearchResultCountSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
-    {
-        _searchResultCount = Math.Clamp((int)Math.Round(e.NewValue / 5) * 5, 5, 50);
-        if (SearchResultCountText is not null) SearchResultCountText.Text = _searchResultCount.ToString();
-        if (!_initializing) SaveSettings_Click(sender, new RoutedEventArgs());
     }
 
     void PreferredDownloadFormatBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2029,19 +1918,11 @@ public sealed partial class MainWindow : Window
                     _crossfadeEnabled = s.CrossfadeEnabled;
                     _crossfadeSeconds = Math.Clamp(s.CrossfadeSeconds, 0.5, 12);
                     _autoplaySimilarTracks = s.AutoplaySimilarTracks;
-                    _normalizeVolume = s.NormalizeVolume;
-                    _normalizationLevel = s.NormalizationLevel is "Quiet" or "Loud" ? s.NormalizationLevel : "Normal";
-                    _streamingQuality = s.StreamingQuality is "Low" or "Normal" or "High" or "VeryHigh"
-                        ? s.StreamingQuality
-                        : "Auto";
                     _shuffleEnabled = s.ShuffleEnabled;
                     _repeatMode = Math.Clamp(s.RepeatMode, 0, 2);
                     _startWithWindows = s.StartWithWindows;
                     _rememberVolume = s.RememberVolume;
                     _savedVolume = s.Volume;
-                    _searchYouTubeMusic = s.SearchYouTubeMusic;
-                    _searchSoundCloud = s.SearchSoundCloud;
-                    _searchResultCount = Math.Clamp(s.SearchResultCount, 5, 50);
                     _preferredDownloadFormat = s.PreferredDownloadFormat is "mp3" or "wav"
                         ? s.PreferredDownloadFormat
                         : "ask";
@@ -2072,32 +1953,8 @@ public sealed partial class MainWindow : Window
         CrossfadeDurationSlider.IsEnabled = _crossfadeEnabled;
         CrossfadeDurationText.Text = $"{_crossfadeSeconds:0.0} seconds";
         AutoplaySimilarToggle.IsOn = _autoplaySimilarTracks;
-        NormalizeVolumeToggle.IsOn = _normalizeVolume;
-        NormalizationLevelBox.IsEnabled = _normalizeVolume;
-        for (var index = 0; index < NormalizationLevelBox.Items.Count; index++)
-        {
-            if (string.Equals((NormalizationLevelBox.Items[index] as ComboBoxItem)?.Tag?.ToString(),
-                    _normalizationLevel, StringComparison.OrdinalIgnoreCase))
-            {
-                NormalizationLevelBox.SelectedIndex = index;
-                break;
-            }
-        }
-        for (var index = 0; index < StreamingQualityBox.Items.Count; index++)
-        {
-            if (string.Equals((StreamingQualityBox.Items[index] as ComboBoxItem)?.Tag?.ToString(),
-                    _streamingQuality, StringComparison.OrdinalIgnoreCase))
-            {
-                StreamingQualityBox.SelectedIndex = index;
-                break;
-            }
-        }
         StartWithWindowsToggle.IsOn = _startWithWindows;
         RememberVolumeToggle.IsOn = _rememberVolume;
-        SearchYouTubeToggle.IsOn = _searchYouTubeMusic;
-        SearchSoundCloudToggle.IsOn = _searchSoundCloud;
-        SearchResultCountSlider.Value = _searchResultCount;
-        SearchResultCountText.Text = _searchResultCount.ToString();
         for (var index = 0; index < PreferredDownloadFormatBox.Items.Count; index++)
         {
             if (string.Equals((PreferredDownloadFormatBox.Items[index] as ComboBoxItem)?.Tag?.ToString(),
@@ -2139,17 +1996,11 @@ public sealed partial class MainWindow : Window
         public bool CrossfadeEnabled { get; set; }
         public double CrossfadeSeconds { get; set; } = 3;
         public bool AutoplaySimilarTracks { get; set; } = true;
-        public bool NormalizeVolume { get; set; } = true;
-        public string NormalizationLevel { get; set; } = "Normal";
-        public string StreamingQuality { get; set; } = "Auto";
         public bool ShuffleEnabled { get; set; }
         public int RepeatMode { get; set; }
         public bool StartWithWindows { get; set; }
         public bool RememberVolume { get; set; }
         public double Volume { get; set; } = 75;
-        public bool SearchYouTubeMusic { get; set; } = true;
-        public bool SearchSoundCloud { get; set; } = true;
-        public int SearchResultCount { get; set; } = 25;
         public string PreferredDownloadFormat { get; set; } = "ask";
         public int Mp3Bitrate { get; set; } = 320;
         public bool OrganizeDownloadsByArtist { get; set; }
@@ -2200,4 +2051,5 @@ public sealed partial class MainWindow : Window
         }
     }
 }
+
 

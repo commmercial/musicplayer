@@ -30,14 +30,29 @@ public sealed class SoundCloudService
             var html = await Http.GetStringAsync("https://soundcloud.com/", ct).ConfigureAwait(false);
             var scripts = Regex.Matches(html, @"src=""(https://a-v2\.sndcdn\.com/assets/[^""]+\.js)""");
 
-            foreach (Match script in scripts)
+            // SoundCloud's page commonly contains many large bundles. Fetch a small
+            // batch at once so cold searches do not wait on each script serially.
+            const int batchSize = 4;
+            for (var offset = 0; offset < scripts.Count; offset += batchSize)
             {
-                var js = await Http.GetStringAsync(script.Groups[1].Value, ct).ConfigureAwait(false);
-                var match = Regex.Match(js, @"client_id[:=]\s*""?([a-zA-Z0-9]{32})");
-                if (match.Success)
+                var batch = scripts.Cast<Match>().Skip(offset).Take(batchSize).ToArray();
+                var downloads = batch.Select(async script =>
                 {
-                    _clientId = match.Groups[1].Value;
-                    return _clientId;
+                    try { return await Http.GetStringAsync(script.Groups[1].Value, ct).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch (HttpRequestException) { return null; }
+                    catch (TaskCanceledException) when (!ct.IsCancellationRequested) { return null; }
+                });
+
+                foreach (var js in await Task.WhenAll(downloads).ConfigureAwait(false))
+                {
+                    if (js is null) continue;
+                    var match = Regex.Match(js, @"client_id[:=]\s*""?([a-zA-Z0-9]{32})");
+                    if (match.Success)
+                    {
+                        _clientId = match.Groups[1].Value;
+                        return _clientId;
+                    }
                 }
             }
             throw new InvalidOperationException("Could not obtain a SoundCloud client id.");
@@ -230,4 +245,5 @@ public sealed class SoundCloudService
     static string Format(TimeSpan d) =>
         d.TotalHours >= 1 ? d.ToString(@"h\:mm\:ss") : d.ToString(@"m\:ss");
 }
+
 

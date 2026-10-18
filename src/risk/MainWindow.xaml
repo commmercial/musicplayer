@@ -1,15 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Window
-    x:Class="Vybe.App.MainWindow"
+    x:Class="Risk.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Title="&lt;3">
+    Title="Risk">
 
     <Grid x:Name="Root" Background="Transparent" SizeChanged="Root_SizeChanged">
         <Grid.Resources>
+            <SolidColorBrush x:Key="ThemeBackgroundBrush" Color="#E0111214" />
             <SolidColorBrush x:Key="GlassPanelBrush" Color="#24FFFFFF" />
             <SolidColorBrush x:Key="ThemeAccentBrush" Color="#7DD3FC" />
             <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#7DD3FC" />
@@ -24,13 +25,15 @@
                 <Setter Property="CornerRadius" Value="10" />
             </Style>
             <Style x:Key="RailButton" TargetType="ToggleButton">
-                <Setter Property="Width" Value="44" />
-                <Setter Property="Height" Value="44" />
+                <Setter Property="Width" Value="196" />
+                <Setter Property="Height" Value="46" />
                 <Setter Property="CornerRadius" Value="10" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
-                <Setter Property="HorizontalAlignment" Value="Center" />
-                <Setter Property="Margin" Value="0,4" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Left" />
+                <Setter Property="Padding" Value="6,0" />
+                <Setter Property="Margin" Value="0,3" />
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="ToggleButton">
@@ -50,6 +53,13 @@
                 <Setter Property="Width" Value="40" />
                 <Setter Property="Height" Value="40" />
                 <Setter Property="CornerRadius" Value="20" />
+            </Style>
+            <Style x:Key="HomeCarouselButton" TargetType="Button">
+                <Setter Property="Background" Value="#B5000000" />
+                <Setter Property="Foreground" Value="#FFF4F0F6" />
+                <Setter Property="BorderBrush" Value="#805A545E" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
             </Style>
             <Style x:Key="SlimSlider" TargetType="Slider">
                 <Setter Property="VerticalAlignment" Value="Center" />
@@ -92,7 +102,7 @@
         </Grid.Resources>
 
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="76" />
+        <ColumnDefinition Width="220" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
@@ -112,35 +122,35 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <StackPanel Grid.Row="0" Margin="0,18,0,20" HorizontalAlignment="Center">
+                <StackPanel Grid.Row="0" Margin="18,18,12,20" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
                     <Image x:Name="AppLogo" Width="42" Height="42" Stretch="UniformToFill" />
-                    <TextBlock Text="&lt;3" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center"
+                    <TextBlock Text="Risk" FontSize="20" FontWeight="Bold" VerticalAlignment="Center"
                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                 </StackPanel>
 
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel HorizontalAlignment="Center">
+                    <StackPanel HorizontalAlignment="Stretch" Margin="12,0">
                         <ToggleButton x:Name="HomeNav" Style="{StaticResource RailButton}" Click="HomeNav_Click"
                                       ToolTipService.ToolTip="Home">
-                            <FontIcon Glyph="&#xE80F;" FontSize="17" />
+                            <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><FontIcon Glyph="&#xE80F;" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center" /><TextBlock Grid.Column="1" Text="Home" VerticalAlignment="Center" /></Grid>
                         </ToggleButton>
                         <ToggleButton x:Name="LibraryNav" Style="{StaticResource RailButton}" Click="LibraryNav_Click"
                                       ToolTipService.ToolTip="Library">
-                            <FontIcon Glyph="&#xE8F1;" FontSize="17" />
+                            <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><FontIcon Glyph="&#xE8F1;" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center" /><TextBlock Grid.Column="1" Text="Your library" VerticalAlignment="Center" /></Grid>
                         </ToggleButton>
                         <ToggleButton x:Name="EqualizerNav" Style="{StaticResource RailButton}" Click="EqualizerNav_Click"
                                       ToolTipService.ToolTip="Equalizer">
-                            <FontIcon Glyph="&#xE992;" FontSize="17" />
+                            <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><FontIcon Glyph="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center" /><TextBlock Grid.Column="1" Text="Equalizer" VerticalAlignment="Center" /></Grid>
                         </ToggleButton>
-                        <Border Height="1" Width="28" Margin="0,10,0,6" Background="#44FFFFFF" />
-                        <StackPanel x:Name="SidebarPlaylistsStack" HorizontalAlignment="Center" Spacing="2" />
+                        <TextBlock Text="PLAYLISTS" FontSize="10" FontWeight="SemiBold" Opacity="0.65" Margin="10,16,0,6" />
+                        <StackPanel x:Name="SidebarPlaylistsStack" HorizontalAlignment="Stretch" Spacing="2" />
                     </StackPanel>
                 </ScrollViewer>
 
                 <ToggleButton Grid.Row="2" x:Name="SettingsNav" Style="{StaticResource RailButton}"
-                              Click="SettingsNav_Click" Margin="0,0,0,18"
+                              Click="SettingsNav_Click" Margin="12,0,12,18"
                               ToolTipService.ToolTip="Settings">
-                    <FontIcon Glyph="&#xE713;" FontSize="17" />
+                    <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><FontIcon Glyph="&#xE713;" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center" /><TextBlock Grid.Column="1" Text="Settings" VerticalAlignment="Center" /></Grid>
                 </ToggleButton>
             </Grid>
         </Border>
@@ -187,9 +197,67 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock x:Name="HomeHeading" Grid.Row="0" Text=""
-                               FontSize="22" FontWeight="SemiBold" Margin="0,4,0,14" TextWrapping="Wrap" />
+                               FontSize="22" FontWeight="SemiBold" Margin="0,4,0,14" TextWrapping="Wrap" Visibility="Collapsed" />
+
+                    <ScrollViewer x:Name="HomeDashboard" Grid.RowSpan="2" VerticalScrollBarVisibility="Hidden">
+                        <StackPanel Spacing="24" Padding="0,16,0,28">
+                            <TextBlock x:Name="HomeWelcome" Text="Good evening" FontSize="32" FontWeight="Bold" />
+                            <Grid>
+                            <ScrollViewer x:Name="HomeQuickLinksScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                                          HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" ZoomMode="Disabled" IsScrollInertiaEnabled="True"
+                                          PointerWheelChanged="HomeCarousel_PointerWheelChanged">
+                                <StackPanel x:Name="HomeQuickLinks" Orientation="Horizontal" Spacing="10" />
+                            </ScrollViewer>
+                            </Grid>
+                            <StackPanel Spacing="12">
+                                <Grid>
+                                    <TextBlock Text="Your playlists" FontSize="23" FontWeight="Bold" VerticalAlignment="Center" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
+                                        <Button Style="{StaticResource HomeCarouselButton}" Tag="HomePlaylistCardsScroll" Click="HomeCarouselLeft_Click" Content="&#xE76B;" FontFamily="Segoe MDL2 Assets" Width="32" Height="30" Padding="0" />
+                                        <Button Style="{StaticResource HomeCarouselButton}" Tag="HomePlaylistCardsScroll" Click="HomeCarouselRight_Click" Content="&#xE76C;" FontFamily="Segoe MDL2 Assets" Width="32" Height="30" Padding="0" />
+                                    </StackPanel>
+                                </Grid>
+                                <Grid>
+                                <ScrollViewer x:Name="HomePlaylistCardsScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                                              HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" ZoomMode="Disabled" IsScrollInertiaEnabled="True"
+                                              PointerWheelChanged="HomeCarousel_PointerWheelChanged">
+                                    <StackPanel x:Name="HomePlaylistCards" Orientation="Horizontal" Spacing="10" />
+                                </ScrollViewer>
+                                </Grid>
+                            </StackPanel>
+                            <StackPanel Spacing="12">
+                                <Grid>
+                                    <TextBlock Text="Recently added" FontSize="23" FontWeight="Bold" VerticalAlignment="Center" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
+                                        <Button Style="{StaticResource HomeCarouselButton}" Tag="HomeRecentTracksScroll" Click="HomeCarouselLeft_Click" Content="&#xE76B;" FontFamily="Segoe MDL2 Assets" Width="32" Height="30" Padding="0" />
+                                        <Button Style="{StaticResource HomeCarouselButton}" Tag="HomeRecentTracksScroll" Click="HomeCarouselRight_Click" Content="&#xE76C;" FontFamily="Segoe MDL2 Assets" Width="32" Height="30" Padding="0" />
+                                    </StackPanel>
+                                </Grid>
+                                <Grid>
+                                <ScrollViewer x:Name="HomeRecentTracksScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                                              HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" ZoomMode="Disabled" IsScrollInertiaEnabled="True"
+                                              PointerWheelChanged="HomeCarousel_PointerWheelChanged">
+                                    <StackPanel x:Name="HomeRecentTracks" Orientation="Horizontal" Spacing="14" />
+                                </ScrollViewer>
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <Grid x:Name="HomeScrollRail" Grid.RowSpan="2" Width="14" HorizontalAlignment="Right"
+                          Background="Transparent" Visibility="Collapsed"
+                          PointerPressed="HomeScrollRail_PointerPressed"
+                          PointerMoved="HomeScrollRail_PointerMoved"
+                          PointerReleased="HomeScrollRail_PointerReleased"
+                          PointerCanceled="HomeScrollRail_PointerReleased">
+                        <Canvas x:Name="HomeScrollRailCanvas" Background="Transparent">
+                            <Border x:Name="HomeScrollThumb" Width="4" Height="48" CornerRadius="2"
+                                    Background="#99FFFFFF" Opacity="0.62" />
+                        </Canvas>
+                    </Grid>
 
                     <ListView x:Name="ResultsList" Grid.Row="1" SelectionMode="Single"
+                              Visibility="Collapsed"
                               SelectionChanged="ResultsList_SelectionChanged"
                               ItemContainerTransitions="{x:Null}">
                         <ListView.ItemTemplate>
@@ -225,7 +293,7 @@
                                                 ToolTipService.ToolTip="Open artist profile" />
                                     </StackPanel>
 
-                                    <TextBlock Grid.Column="3" Text="{Binding Source}" FontSize="10" FontWeight="SemiBold"
+                                    <TextBlock Grid.Column="3" Text="{Binding DisplaySource}" FontSize="10" FontWeight="SemiBold"
                                                VerticalAlignment="Center" Margin="0,0,4,0"
                                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
@@ -241,22 +309,41 @@
                 <!-- ARTIST PROFILE -->
                 <Grid x:Name="ProfilePage" Visibility="Collapsed">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="250" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <Grid Grid.Row="0" Margin="0,4,0,14">
+                    <Border Grid.Row="0" CornerRadius="14" Background="{StaticResource GlassPanelBrush}">
+                      <Grid>
+                        <Image x:Name="ProfileBannerImage" Stretch="UniformToFill" Opacity="0.72" />
+                        <Border Background="#88000000" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Margin="24" Spacing="18">
+                            <Border Width="112" Height="112" CornerRadius="56" Background="#33333333"
+                                    BorderBrush="#AAFFFFFF" BorderThickness="2">
+                                <Image x:Name="ProfileAvatarImage" Stretch="UniformToFill" />
+                            </Border>
+                            <StackPanel VerticalAlignment="Center" Spacing="5">
+                                <TextBlock x:Name="ProfileHeading" Text="Artist" FontSize="30" FontWeight="Bold"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock x:Name="ProfileDescription" Text="Artist profile" FontSize="13"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </StackPanel>
+                        <Button Content="Back" Click="ProfileBack_Click" HorizontalAlignment="Right"
+                                VerticalAlignment="Top" Margin="12" />
+                      </Grid>
+                    </Border>
+
+                    <Grid Grid.Row="1" Margin="0,12,0,10" ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock x:Name="ProfileHeading" Text="Artist" FontSize="22" FontWeight="SemiBold" />
-                            <TextBlock x:Name="ProfileDescription" FontSize="12"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </StackPanel>
-                        <Button Grid.Column="1" Content="Back to results" Click="ProfileBack_Click" />
+                        <Button x:Name="ProfileAllTab" Content="All" Click="ProfileAllTab_Click" />
+                        <Button x:Name="ProfilePopularTab" Grid.Column="1" Content="Popular tracks"
+                                Click="ProfilePopularTab_Click" />
                     </Grid>
-                    <ListView x:Name="ProfileTracksList" Grid.Row="1" SelectionMode="Single"
+                    <ListView x:Name="ProfileTracksList" Grid.Row="2" SelectionMode="Single"
                               SelectionChanged="ProfileTracksList_SelectionChanged"
                               ItemContainerTransitions="{x:Null}">
                         <ListView.ItemTemplate>
@@ -265,7 +352,6 @@
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="44" />
                                         <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" Width="44" Height="44" CornerRadius="8"
@@ -281,15 +367,47 @@
                                         <TextBlock Text="{Binding Subtitle}" FontSize="12" TextTrimming="CharacterEllipsis"
                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </StackPanel>
-                                    <TextBlock Grid.Column="2" Text="{Binding Source}" FontSize="10"
-                                               VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                    <TextBlock Grid.Column="3" Text="{Binding DurationLabel}" FontSize="12"
+                                    <TextBlock Grid.Column="2" Text="{Binding DurationLabel}" FontSize="12"
                                                VerticalAlignment="Center" Width="46" TextAlignment="Right"
                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>
                     </ListView>
+                </Grid>
+
+                <!-- EXPANDED PLAYER -->
+                <Grid x:Name="ExpandedPlayerPage" Visibility="Collapsed" Padding="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Button Grid.Row="0" Content="Back" Click="CloseExpandedPlayer_Click"
+                            HorizontalAlignment="Right" ToolTipService.ToolTip="Close player view" />
+                    <Grid Grid.Row="1" ColumnSpacing="40" Padding="24,10,24,24">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.1*" />
+                            <ColumnDefinition Width="1*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="14">
+                            <Border Width="420" Height="420" MaxWidth="460" MaxHeight="460"
+                                    CornerRadius="18" Background="{StaticResource GlassPanelBrush}"
+                                    HorizontalAlignment="Center">
+                                <Image x:Name="ExpandedArtwork" Stretch="UniformToFill" />
+                            </Border>
+                            <TextBlock x:Name="ExpandedTitle" FontSize="26" FontWeight="Bold"
+                                       TextAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            <Button x:Name="ExpandedArtistButton" Click="NowArtist_Click"
+                                    Style="{StaticResource ArtistLinkButton}" HorizontalAlignment="Center" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="28">
+                            <StackPanel x:Name="VisualizerBars" Orientation="Horizontal" Height="130"
+                                        HorizontalAlignment="Stretch" Spacing="4" />
+                            <TextBlock x:Name="VisualizerStatus" Visibility="Collapsed"
+                                       TextWrapping="Wrap" Opacity="0.8" />
+                            <StackPanel x:Name="ExpandedControlsHost" HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                    </Grid>
                 </Grid>
 
                 <!-- LIBRARY -->
@@ -365,11 +483,7 @@
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <Border Width="54" Height="54" CornerRadius="7" Background="#30303030">
-                                            <Grid>
-                                                <TextBlock Text="♫" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                                <Image Source="{Binding Cover}" Stretch="UniformToFill" />
-                                            </Grid>
+                                            <Image Source="{Binding Cover}" Stretch="UniformToFill" />
                                         </Border>
                                         <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
@@ -515,7 +629,8 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <TextBlock Text="Settings" FontSize="22" FontWeight="SemiBold" Margin="0,4,0,12" />
-                    <TabView x:Name="SettingsTabs" Grid.Row="1" IsAddTabButtonVisible="False" MinHeight="360">
+                    <TabView x:Name="SettingsTabs" Grid.Row="1" IsAddTabButtonVisible="False" MinHeight="360"
+                             SelectionChanged="SettingsTabs_SelectionChanged">
                         <TabViewItem Header="General" IsClosable="False">
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <StackPanel Spacing="14" Margin="8">
@@ -551,7 +666,7 @@
                                     <ToggleSwitch x:Name="AutoplaySimilarToggle" Header="Autoplay similar tracks when the queue ends"
                                                   OnContent="On" OffContent="Off" IsOn="True"
                                                   Toggled="AutoplaySimilarToggle_Toggled" />
-                                    <ToggleSwitch x:Name="NormalizeVolumeToggle" Header="Normalize volume (YouTube Music)"
+                                    <ToggleSwitch x:Name="NormalizeVolumeToggle" Header="Normalize volume"
                                                   OnContent="On" OffContent="Off" IsOn="True"
                                                   Toggled="NormalizeVolumeToggle_Toggled" />
                                     <StackPanel Spacing="4" Margin="0,0,0,4">
@@ -564,7 +679,7 @@
                                         </ComboBox>
                                     </StackPanel>
                                     <StackPanel Spacing="4" Margin="0,0,0,4">
-                                        <TextBlock Text="Streaming quality (YouTube Music)" FontSize="12" FontWeight="SemiBold" />
+                                        <TextBlock Text="Streaming quality" FontSize="12" FontWeight="SemiBold" />
                                         <ComboBox x:Name="StreamingQualityBox" Width="220" HorizontalAlignment="Left"
                                                   SelectionChanged="StreamingQualityBox_SelectionChanged">
                                             <ComboBoxItem Content="Automatic" Tag="Auto" />
@@ -629,10 +744,10 @@
                         <TabViewItem Header="Search" IsClosable="False">
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <StackPanel Spacing="14" Margin="8">
-                                    <ToggleSwitch x:Name="SearchYouTubeToggle" Header="Search YouTube Music"
+                                    <ToggleSwitch x:Name="SearchYouTubeToggle" Header="Search online" Visibility="Collapsed"
                                                   OnContent="On" OffContent="Off" IsOn="True"
                                                   Toggled="SearchSourceToggle_Toggled" />
-                                    <ToggleSwitch x:Name="SearchSoundCloudToggle" Header="Search SoundCloud"
+                                    <ToggleSwitch x:Name="SearchSoundCloudToggle" Header="Search SoundCloud" Visibility="Collapsed"
                                                   OnContent="On" OffContent="Off" IsOn="True"
                                                   Toggled="SearchSourceToggle_Toggled" />
                                     <StackPanel Spacing="4">
@@ -678,13 +793,13 @@
         </Grid>
 
         <!-- ============ PLAYER BAR ============ -->
-        <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+        <Border x:Name="PlayerBar" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
                 Background="{StaticResource GlassPanelBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="0,1,0,0" Padding="0">
+                BorderThickness="0" Padding="0">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="76" />
+                    <ColumnDefinition x:Name="PlayerSidebarSpacer" Width="220" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
             <Grid x:Name="PlayerLayout" Grid.Column="1" Padding="24,14" ColumnSpacing="20">
@@ -705,14 +820,9 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <Button x:Name="NowArtworkButton" Grid.Column="0" Width="52" Height="52"
-                            Style="{StaticResource PlaybackMetadataButton}" Click="NowTrack_Click"
-                            ToolTipService.ToolTip="Add this song to a playlist">
-                        <Grid>
-                            <TextBlock Text="♫" FontSize="23" HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"
-                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                            <Image x:Name="NowArtwork" Stretch="UniformToFill" IsHitTestVisible="False" />
-                        </Grid>
+                            Style="{StaticResource PlaybackMetadataButton}" Click="NowArtwork_Click"
+                            ToolTipService.ToolTip="Open expanded player">
+                        <Image x:Name="NowArtwork" Stretch="UniformToFill" IsHitTestVisible="False" />
                     </Button>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                         <Button Style="{StaticResource PlaybackMetadataButton}" Click="NowTrack_Click"
@@ -731,38 +841,38 @@
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="6">
                         <Button x:Name="ShuffleButton" Style="{StaticResource TransportButton}" Click="ShuffleButton_Click"
                                 ToolTipService.ToolTip="Shuffle off">
-                            <FontIcon x:Name="ShuffleIcon" Glyph="&#xE8B1;" FontSize="15" />
+                            <FontIcon x:Name="ShuffleIcon" Glyph="&#xE8B1;" FontSize="15" Margin="3,0,0,0" />
                         </Button>
                         <Button x:Name="PrevButton" Style="{StaticResource TransportButton}" Click="Previous_Click"
                                 ToolTipService.ToolTip="Previous">
-                            <FontIcon Glyph="&#xE892;" FontSize="15" />
+                            <FontIcon Glyph="&#xE892;" FontSize="15" Margin="3,0,0,0" />
                         </Button>
                         <Button x:Name="PlayButton" Style="{StaticResource TransportButton}" Click="Play_Click"
                                 Width="46" Height="46" CornerRadius="23"
                                 Background="#38FFFFFF"
                                 ToolTipService.ToolTip="Play / Pause">
-                            <FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="17"
+                            <FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="17" Margin="3,0,0,0"
                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
                         </Button>
                         <Button x:Name="NextButton" Style="{StaticResource TransportButton}" Click="Next_Click"
                                 ToolTipService.ToolTip="Next">
-                            <FontIcon Glyph="&#xE893;" FontSize="15" />
+                            <FontIcon Glyph="&#xE893;" FontSize="15" Margin="3,0,0,0" />
                         </Button>
                         <Button x:Name="RepeatButton" Style="{StaticResource TransportButton}" Click="RepeatButton_Click"
                                 ToolTipService.ToolTip="Repeat off">
-                            <FontIcon x:Name="RepeatIcon" Glyph="&#xE8EE;" FontSize="15" />
+                            <FontIcon x:Name="RepeatIcon" Glyph="&#xE8EE;" FontSize="15" Margin="3,0,0,0" />
                         </Button>
                 <Button x:Name="FavoriteButton" Style="{StaticResource TransportButton}"
                                 Click="FavoriteCurrent_Click" ToolTipService.ToolTip="Add to favorites">
-                            <FontIcon x:Name="FavoriteIcon" Glyph="&#xEB51;" FontSize="15" />
+                            <FontIcon x:Name="FavoriteIcon" Glyph="&#xEB51;" FontSize="15" Margin="3,0,0,0" />
                         </Button>
                         <Button x:Name="AddToPlaylistButton" Style="{StaticResource TransportButton}"
                                 Click="AddCurrentToPlaylist_Click" ToolTipService.ToolTip="Add to playlist">
-                            <FontIcon Glyph="&#xE710;" FontSize="15" />
+                            <FontIcon Glyph="&#xE710;" FontSize="15" Margin="3,0,0,0" />
                         </Button>
                         <Button x:Name="DownloadButton" Style="{StaticResource TransportButton}" Click="Download_Click"
                                 ToolTipService.ToolTip="Download this track">
-                            <FontIcon Glyph="&#xE896;" FontSize="15" />
+                            <FontIcon Glyph="&#xE896;" FontSize="15" Margin="3,0,0,0" />
                         </Button>
                     </StackPanel>
 
@@ -789,7 +899,8 @@
                 <StackPanel x:Name="VolumePanel" Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <Button x:Name="MuteButton" Style="{StaticResource TransportButton}" Width="34" Height="34"
                             Click="Mute_Click" ToolTipService.ToolTip="Mute">
-                        <FontIcon x:Name="VolumeIcon" Glyph="&#xE767;" FontSize="15" />
+                        <FontIcon x:Name="VolumeIcon" Glyph="&#xE767;" FontFamily="Segoe MDL2 Assets"
+                                  FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Button>
                     <Slider x:Name="VolumeSlider" Style="{StaticResource SlimSlider}"
                             Minimum="0" Maximum="100" Value="75" Width="110"

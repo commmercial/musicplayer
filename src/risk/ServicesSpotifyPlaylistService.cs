@@ -2,7 +2,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace Vybe.App.Services;
+namespace Risk.App.Services;
 
 public sealed class SpotifyPlaylistService
 {
@@ -72,6 +72,7 @@ public sealed class SpotifyPlaylistService
                 Title = title,
                 ArtistName = artist,
                 Subtitle = artist,
+                ArtworkUrl = ExtractTrackArtwork(item),
                 Source = "SPOTIFY",
                 Id = spotifyUri,
                 WebUrl = spotifyUri.StartsWith("spotify:track:", StringComparison.Ordinal)
@@ -91,4 +92,53 @@ public sealed class SpotifyPlaylistService
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+
+    static string ExtractTrackArtwork(JsonElement track)
+    {
+        foreach (var property in new[] { "imageUrl", "image_url", "artworkUrl", "artwork_url" })
+        {
+            var direct = ReadString(track, property);
+            if (!string.IsNullOrWhiteSpace(direct)) return direct;
+        }
+
+        if (TryGetProperty(track, "coverArt", out var cover) && ReadSources(cover) is { Length: > 0 } coverUrl)
+            return coverUrl;
+        if (TryGetProperty(track, "albumOfTrack", out var albumOfTrack))
+        {
+            if (TryGetProperty(albumOfTrack, "coverArt", out cover) && ReadSources(cover) is { Length: > 0 } albumUrl)
+                return albumUrl;
+        }
+        if (TryGetProperty(track, "album", out var album))
+        {
+            foreach (var property in new[] { "coverArt", "images" })
+                if (TryGetProperty(album, property, out var images) && ReadSources(images) is { Length: > 0 } albumUrl)
+                    return albumUrl;
+        }
+        return "";
+    }
+
+    static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out value)) return true;
+        value = default;
+        return false;
+    }
+
+    static string ReadSources(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object && value.TryGetProperty("sources", out var sources))
+            value = sources;
+        if (value.ValueKind == JsonValueKind.Array)
+            return value.EnumerateArray()
+                .Select(source => new
+                {
+                    Url = ReadString(source, "url") ?? "",
+                    Width = source.TryGetProperty("width", out var width) && width.TryGetInt32(out var number) ? number : 0
+                })
+                .Where(source => source.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(source => source.Width)
+                .Select(source => source.Url)
+                .FirstOrDefault() ?? "";
+        return "";
+    }
 }

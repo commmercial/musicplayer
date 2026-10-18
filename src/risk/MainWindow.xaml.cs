@@ -4,17 +4,23 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Text.Json;
+using Windows.Storage.Streams;
 using Windows.Media.Audio;
 using Windows.Media.Core;
 using Windows.Storage.Pickers;
-using Vybe.App.Services;
+using Risk.App.Services;
 using WinRT.Interop;
+using System.Runtime.InteropServices;
 
-namespace Vybe.App;
+namespace Risk.App;
 
 public sealed partial class MainWindow : Window
 {
@@ -24,12 +30,26 @@ public sealed partial class MainWindow : Window
     readonly SoundCloudService _sc = new();
     readonly SpotifyPlaylistService _spotify = new();
     readonly DiscordPresenceService _discord = new();
+    static readonly HttpClient ArtworkHttp = CreateArtworkHttpClient();
+    static readonly SemaphoreSlim ArtworkDownloadGate = new(8, 8);
+    static readonly ConcurrentDictionary<string, byte[]> ArtworkBytes = new(StringComparer.OrdinalIgnoreCase);
+    readonly ConcurrentDictionary<TrackItem, byte> _artworkLookupAttempted = new();
 
     readonly RangeObservableCollection<TrackItem> _results = new();
     readonly ObservableCollection<TrackItem> _library = new();
-    readonly ObservableCollection<TrackItem> _profileTracks = new();
+    readonly RangeObservableCollection<TrackItem> _profileTracks = new();
     readonly ObservableCollection<PlaylistItem> _playlists = new();
+    readonly Dictionary<string, (string Name, string AvatarUrl, string BannerUrl, List<TrackItem> Tracks)> _artistProfileCache = new(StringComparer.OrdinalIgnoreCase);
+    List<TrackItem> _allProfileTracks = new();
     PlaylistItem? _selectedPlaylist;
+    FrameworkElement? _pageBeforeExpanded;
+    bool _isExpandedPlayer;
+    Microsoft.UI.Dispatching.DispatcherQueueTimer? _visualizerTimer;
+    readonly Dictionary<ScrollViewer, Microsoft.UI.Dispatching.DispatcherQueueTimer> _carouselScrollTimers = new();
+    double[] _latestVisualizerLevels = new double[42];
+    double[] _displayedVisualizerLevels = new double[42];
+    bool _homeScrollThumbDragging;
+    double _homeScrollThumbGrabOffset;
 
     List<TrackItem> _queue = new();
     List<TrackItem>? _unshuffledQueue;
@@ -42,9 +62,10 @@ public sealed partial class MainWindow : Window
     double _lastVolume = 75;
     double _savedVolume = 75;
     int _loadToken;
+    int _profileLoadToken;
     string _downloadFolder = "";
     readonly string _dataDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VYBE");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Risk");
     double[] _savedEqualizerGains = Array.Empty<double>();
     string _discordApplicationId = SharedDiscordApplicationId;
     bool _discordActivityEnabled = true;
@@ -70,17 +91,36 @@ public sealed partial class MainWindow : Window
     Microsoft.UI.Dispatching.DispatcherQueueTimer? _progressTimer;
     Microsoft.UI.Dispatching.DispatcherQueueTimer? _discordStatusTimer;
     CancellationTokenSource? _searchCancellation;
+    IntPtr _trayIconHandle;
+    IntPtr _windowHandle;
+    bool _exitRequested;
+    TrayWindowProc? _trayWindowProc;
+    const uint TrayCallbackMessage = 0x8001;
+    const uint WmLButtonUp = 0x0202;
+    const uint WmLButtonDoubleClick = 0x0203;
+    const uint WmRButtonUp = 0x0205;
 
     public MainWindow()
     {
         InitializeComponent();
         Canvas.SetZIndex(SidebarRail, 1);
         Title = "Risk";
-        try { SystemBackdrop = new DesktopAcrylicBackdrop(); } catch { }
+        TryApplyAcrylicBackdrop();
+        InitializeSystemTray();
+        AppWindow.Closing += (_, e) =>
+        {
+            if (_exitRequested) return;
+            e.Cancel = true;
+            ShowWindow(_windowHandle, 0);
+            ShowTrayNotice("Risk is hidden in the system tray.");
+        };
         try
         {
-            var icon = Path.Combine(AppContext.BaseDirectory, "Assets", "app-icon-v2.ico");
-            var logo = Path.Combine(AppContext.BaseDirectory, "Assets", "app-icon.png");
+            var localAssets = Path.Combine(AppContext.BaseDirectory, "Assets");
+            var sharedAssets = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Assets"));
+            var assets = Directory.Exists(localAssets) ? localAssets : sharedAssets;
+            var icon = Path.Combine(assets, "app-icon-v2.ico");
+            var logo = Path.Combine(assets, "app-icon.png");
             if (File.Exists(icon)) AppWindow.SetIcon(icon);
             if (File.Exists(logo)) AppLogo.Source = new BitmapImage(new Uri(logo));
         }
@@ -93,17 +133,29 @@ public sealed partial class MainWindow : Window
         _playlists.CollectionChanged += (_, _) => RefreshSidebarPlaylists();
         _player.MediaEnded += () => DispatcherQueue.TryEnqueue(HandleMediaEnded);
         _player.PlaybackFailed += message => DispatcherQueue.TryEnqueue(() => StatusText.Text = "Playback failed: " + message);
+        _player.AudioLevelsChanged += levels => Interlocked.Exchange(ref _latestVisualizerLevels, levels);
+        _player.AudioAnalysisFailed += message => DispatcherQueue.TryEnqueue(() =>
+        {
+            VisualizerStatus.Text = "Visualizer unavailable: " + message;
+            VisualizerStatus.Visibility = Visibility.Visible;
+        });
         Closed += async (_, _) =>
         {
             _searchCancellation?.Cancel();
             await _discord.ClearAsync();
             _progressTimer?.Stop();
             _discordStatusTimer?.Stop();
+            _visualizerTimer?.Stop();
+            foreach (var timer in _carouselScrollTimers.Values) timer.Stop();
+            _carouselScrollTimers.Clear();
             _discord.Dispose();
             _player.Dispose();
+            RemoveSystemTrayIcon();
         };
 
+        MigrateLegacyDataDirectory();
         LoadSettings();
+        HydrateArtwork(_playlists.SelectMany(playlist => playlist.Tracks));
         DiscordActivityToggle.IsOn = _discordActivityEnabled;
         UpdatePlaybackModeButtons();
         _initializing = false;
@@ -113,10 +165,187 @@ public sealed partial class MainWindow : Window
         _progressTimer.IsRepeating = true;
         _progressTimer.Tick += (_, _) => UpdateProgress();
         _progressTimer.Start();
+        BuildVisualizerBars();
+        HomeDashboard.ViewChanged += (_, _) => UpdateHomeScrollThumb();
+        HomeDashboard.SizeChanged += (_, _) => UpdateHomeScrollThumb();
+        HomeScrollRail.SizeChanged += (_, _) => UpdateHomeScrollThumb();
+        UpdateHomeScrollThumb();
+        _visualizerTimer = DispatcherQueue.CreateTimer();
+        _visualizerTimer.Interval = TimeSpan.FromMilliseconds(16);
+        _visualizerTimer.IsRepeating = true;
+        _visualizerTimer.Tick += (_, _) => UpdateVisualizer();
         _ = InitializeAudioAsync();
         ShowPage(HomePage);
 
         ResizeWindow();
+    }
+
+    void InitializeSystemTray()
+    {
+        try
+        {
+            _windowHandle = WindowNative.GetWindowHandle(this);
+            _trayWindowProc = TrayWindowProcHandler;
+            SetWindowSubclass(_windowHandle, _trayWindowProc, (UIntPtr)1, UIntPtr.Zero);
+            var localAssets = Path.Combine(AppContext.BaseDirectory, "Assets");
+            var sharedAssets = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Assets"));
+            var assets = Directory.Exists(localAssets) ? localAssets : sharedAssets;
+            var iconPath = Path.Combine(assets, "app-icon-v2.ico");
+            if (File.Exists(iconPath))
+                _trayIconHandle = LoadImage(IntPtr.Zero, iconPath, 1, 0, 0, 0x10 | 0x40);
+            var data = new NotifyIconData
+            {
+                Size = Marshal.SizeOf<NotifyIconData>(),
+                Window = _windowHandle,
+                Id = 1,
+                Flags = 1 | 2 | 4,
+                CallbackMessage = TrayCallbackMessage,
+                Icon = _trayIconHandle,
+                Tip = "Risk Music Player",
+                Info = "",
+                InfoTitle = "",
+                InfoTimeoutOrVersion = 0,
+                InfoFlags = 0
+            };
+            Shell_NotifyIcon(0, ref data);
+        }
+        catch
+        {
+            // Keep the player usable if Windows refuses to create a notification-area icon.
+        }
+    }
+
+    void RestoreFromSystemTray()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            ShowWindow(_windowHandle, 5);
+            Activate();
+        });
+    }
+
+    void ExitFromSystemTray()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _exitRequested = true;
+            Close();
+        });
+    }
+
+    void ShowTrayNotice(string message)
+    {
+        if (_windowHandle == IntPtr.Zero) return;
+        var data = CreateTrayData(1 | 2 | 4 | 16);
+        data.InfoTitle = "Risk is still running";
+        data.Info = message;
+        data.InfoTimeoutOrVersion = 4500;
+        data.InfoFlags = 1;
+        Shell_NotifyIcon(1, ref data);
+    }
+
+    void RemoveSystemTrayIcon()
+    {
+        if (_windowHandle != IntPtr.Zero)
+        {
+            var data = CreateTrayData(0);
+            Shell_NotifyIcon(2, ref data);
+            RemoveWindowSubclass(_windowHandle, _trayWindowProc!, (UIntPtr)1);
+        }
+        if (_trayIconHandle != IntPtr.Zero) DestroyIcon(_trayIconHandle);
+        _trayIconHandle = IntPtr.Zero;
+    }
+
+    NotifyIconData CreateTrayData(uint flags) => new()
+    {
+        Size = Marshal.SizeOf<NotifyIconData>(),
+        Window = _windowHandle,
+        Id = 1,
+        Flags = flags,
+        CallbackMessage = TrayCallbackMessage,
+        Icon = _trayIconHandle,
+        Tip = "Risk Music Player",
+        Info = "",
+        InfoTitle = "",
+        InfoTimeoutOrVersion = 0,
+        InfoFlags = 0
+    };
+
+    IntPtr TrayWindowProcHandler(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam,
+        UIntPtr subclassId, UIntPtr referenceData)
+    {
+        if (message == TrayCallbackMessage)
+        {
+            var notification = unchecked((uint)lParam.ToInt64());
+            if (notification is WmLButtonUp or WmLButtonDoubleClick or 0x0400 or 0x0401)
+                RestoreFromSystemTray();
+            else if (notification == WmRButtonUp)
+                ShowTrayContextMenu();
+        }
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+
+    void ShowTrayContextMenu()
+    {
+        var menu = CreatePopupMenu();
+        if (menu == IntPtr.Zero) return;
+        AppendMenu(menu, 0, 1, "Open Risk");
+        AppendMenu(menu, 0x800, 0, null);
+        AppendMenu(menu, 0, 2, "Exit Risk");
+        GetCursorPos(out var point);
+        SetForegroundWindow(_windowHandle);
+        var command = TrackPopupMenuEx(menu, 0x0100 | 0x0002, point.X, point.Y, _windowHandle, IntPtr.Zero);
+        DestroyMenu(menu);
+        PostMessage(_windowHandle, 0, IntPtr.Zero, IntPtr.Zero);
+        if (command == 1) RestoreFromSystemTray();
+        else if (command == 2) ExitFromSystemTray();
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct NotifyIconData
+    {
+        public int Size;
+        public IntPtr Window;
+        public uint Id;
+        public uint Flags;
+        public uint CallbackMessage;
+        public IntPtr Icon;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Tip;
+        public uint State;
+        public uint StateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string Info;
+        public uint InfoTimeoutOrVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string InfoTitle;
+        public uint InfoFlags;
+        public Guid GuidItem;
+        public IntPtr BalloonIcon;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct TrayPoint { public int X; public int Y; }
+
+    delegate IntPtr TrayWindowProc(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam,
+        UIntPtr subclassId, UIntPtr referenceData);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern bool Shell_NotifyIcon(uint message, ref NotifyIconData data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int width, int height, uint flags);
+    [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr icon);
+    [DllImport("comctl32.dll")] static extern bool SetWindowSubclass(IntPtr hwnd, TrayWindowProc callback, UIntPtr subclassId, UIntPtr referenceData);
+    [DllImport("comctl32.dll")] static extern bool RemoveWindowSubclass(IntPtr hwnd, TrayWindowProc callback, UIntPtr subclassId);
+    [DllImport("comctl32.dll")] static extern IntPtr DefSubclassProc(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreatePopupMenu();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool AppendMenu(IntPtr menu, uint flags, nuint id, string? text);
+    [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr menu);
+    [DllImport("user32.dll")] static extern int TrackPopupMenuEx(IntPtr menu, uint flags, int x, int y, IntPtr hwnd, IntPtr parameters);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out TrayPoint point);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd, int command);
+
+    void TryApplyAcrylicBackdrop()
+    {
+        // The content root remains transparent, allowing the OS acrylic blur to show.
+        try { SystemBackdrop = new DesktopAcrylicBackdrop(); } catch { }
     }
 
     async Task InitializeAudioAsync()
@@ -149,9 +378,13 @@ public sealed partial class MainWindow : Window
     void Root_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         var width = e.NewSize.Width;
-        var compact = width < 980;
+        // The sidebar consumes 220 px in the normal window layout. Switch the
+        // player to two rows before the remaining width becomes too small for
+        // artwork/title, transport controls, and volume to sit side by side.
+        var compact = width < 1120;
         var narrow = width < 680;
-        Root.ColumnDefinitions[0].Width = new GridLength(narrow ? 60 : 76);
+        Root.ColumnDefinitions[0].Width = new GridLength(narrow ? 60 : width < 900 ? 76 : 220);
+        PlayerSidebarSpacer.Width = Root.ColumnDefinitions[0].Width;
         SearchHeader.Margin = width < 760 ? new Thickness(14, 12, 14, 8) : new Thickness(28, 20, 28, 12);
         ContentArea.Margin = width < 760 ? new Thickness(14, 0, 14, 0) : new Thickness(28, 0, 28, 0);
 
@@ -209,21 +442,71 @@ public sealed partial class MainWindow : Window
 
     void ShowPage(FrameworkElement page)
     {
+        if (_isExpandedPlayer && page != ExpandedPlayerPage)
+        {
+            _isExpandedPlayer = false;
+            RestoreExpandedPlayerLayout();
+            _pageBeforeExpanded = null;
+        }
         HomePage.Visibility = page == HomePage ? Visibility.Visible : Visibility.Collapsed;
         LibraryPage.Visibility = page == LibraryPage ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = page == SettingsPage ? Visibility.Visible : Visibility.Collapsed;
         ProfilePage.Visibility = page == ProfilePage ? Visibility.Visible : Visibility.Collapsed;
+        ExpandedPlayerPage.Visibility = page == ExpandedPlayerPage ? Visibility.Visible : Visibility.Collapsed;
         EqualizerPage.Visibility = page == EqualizerPage ? Visibility.Visible : Visibility.Collapsed;
         PlaylistDetailPage.Visibility = page == PlaylistDetailPage ? Visibility.Visible : Visibility.Collapsed;
 
         SettingsNav.IsChecked = page == SettingsPage;
         EqualizerNav.IsChecked = page == EqualizerPage;
-        HomeNav.IsChecked = page == HomePage || page == ProfilePage;
+        HomeNav.IsChecked = page == HomePage || page == ProfilePage || (page == ExpandedPlayerPage && _pageBeforeExpanded == HomePage);
         LibraryNav.IsChecked = page == LibraryPage || page == PlaylistDetailPage;
         UpdateNavigationTheme();
+
+        AnimateNavigationElement(page);
     }
 
-    void HomeNav_Click(object sender, RoutedEventArgs e) => ShowPage(HomePage);
+    void AnimateNavigationElement(FrameworkElement element)
+    {
+        element.Opacity = 0;
+        var slide = new TranslateTransform { Y = 9 };
+        element.RenderTransform = slide;
+        var transition = new Storyboard();
+        var fade = new DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = TimeSpan.FromMilliseconds(210),
+            EnableDependentAnimation = true
+        };
+        var move = new DoubleAnimation
+        {
+            From = 9,
+            To = 0,
+            Duration = TimeSpan.FromMilliseconds(240),
+            EnableDependentAnimation = true
+        };
+        Storyboard.SetTarget(fade, element);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+        Storyboard.SetTarget(move, slide);
+        Storyboard.SetTargetProperty(move, "Y");
+        transition.Children.Add(fade);
+        transition.Children.Add(move);
+        transition.Begin();
+    }
+
+    void SettingsTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SettingsTabs.SelectedItem is TabViewItem { Content: FrameworkElement content })
+            AnimateNavigationElement(content);
+    }
+
+    void HomeNav_Click(object sender, RoutedEventArgs e)
+    {
+        HomeDashboard.Visibility = Visibility.Visible;
+        HomeHeading.Visibility = Visibility.Collapsed;
+        ResultsList.Visibility = Visibility.Collapsed;
+        ShowPage(HomePage);
+    }
     void LibraryNav_Click(object sender, RoutedEventArgs e) => ShowPage(LibraryPage);
     void SettingsNav_Click(object sender, RoutedEventArgs e) => ShowPage(SettingsPage);
     void EqualizerNav_Click(object sender, RoutedEventArgs e) => ShowPage(EqualizerPage);
@@ -232,43 +515,38 @@ public sealed partial class MainWindow : Window
     {
         if (SidebarPlaylistsStack is null) return;
         SidebarPlaylistsStack.Children.Clear();
+        BuildHomeDashboard();
         foreach (var playlist in _playlists
                      .OrderByDescending(item => string.Equals(item.Name, "Favorites", StringComparison.OrdinalIgnoreCase))
                      .Take(8))
         {
             var isFavorites = string.Equals(playlist.Name, "Favorites", StringComparison.OrdinalIgnoreCase);
-            var tint = Windows.UI.Color.FromArgb(255, 48, 126, 245);
             var surface = new Border
             {
                 Width = 36,
                 Height = 36,
                 CornerRadius = new CornerRadius(9),
                 BorderThickness = new Thickness(isFavorites ? 1 : 0),
-                BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(150, 94, 174, 255)),
-                Background = isFavorites
-                    ? new Microsoft.UI.Xaml.Media.AcrylicBrush
-                    {
-                        TintColor = tint,
-                        TintOpacity = 0.36,
-                        FallbackColor = Windows.UI.Color.FromArgb(255, 37, 100, 190)
-                    }
-                    : new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(30, 255, 255, 255))
+                BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(36, 255, 255, 255)),
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(30, 255, 255, 255))
             };
 
-            if (isFavorites)
+            if (playlist.Cover is not null)
+            {
+                surface.Child = new Image { Source = playlist.Cover, Stretch = Stretch.UniformToFill };
+            }
+            else if (isFavorites)
             {
                 surface.Child = new TextBlock
                 {
                     Text = "♡",
                     FontSize = 20,
-                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 0, 0, 0)),
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(_lightTheme
+                        ? Windows.UI.Color.FromArgb(255, 55, 55, 60)
+                        : Windows.UI.Color.FromArgb(255, 238, 238, 242)),
                     HorizontalAlignment = HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center
                 };
-            }
-            else if (playlist.Cover is not null)
-            {
-                surface.Child = new Image { Source = playlist.Cover, Stretch = Stretch.UniformToFill };
             }
             else
             {
@@ -284,21 +562,292 @@ public sealed partial class MainWindow : Window
                 };
             }
 
+            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
+            text.Children.Add(new TextBlock
+            {
+                Text = playlist.Name,
+                FontSize = 13,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 132
+            });
+            text.Children.Add(new TextBlock
+            {
+                Text = $"Playlist · {playlist.Tracks.Count} songs",
+                FontSize = 11,
+                Opacity = 0.65,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 132
+            });
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            content.Children.Add(surface);
+            content.Children.Add(text);
             var button = new Button
             {
-                Width = 44,
-                Height = 44,
-                Padding = new Thickness(4),
+                Width = 196,
+                Height = 58,
+                Padding = new Thickness(6),
                 Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
                 BorderThickness = new Thickness(0),
-                CornerRadius = new CornerRadius(11),
-                Content = surface,
+                CornerRadius = new CornerRadius(8),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Content = content,
                 DataContext = playlist
             };
             ToolTipService.SetToolTip(button, playlist.Name);
             button.Click += SidebarPlaylistButton_Click;
             SidebarPlaylistsStack.Children.Add(button);
         }
+    }
+
+    void BuildHomeDashboard()
+    {
+        if (HomeQuickLinks is null || HomePlaylistCards is null || HomeRecentTracks is null) return;
+        HomeQuickLinks.Children.Clear();
+        HomePlaylistCards.Children.Clear();
+        HomeRecentTracks.Children.Clear();
+        HomeWelcome.Text = DateTime.Now.Hour switch
+        {
+            < 5 => "Welcome back",
+            < 12 => "Good morning",
+            < 18 => "Good afternoon",
+            < 22 => "Good evening",
+            _ => "Welcome back"
+        };
+
+        var playlists = _playlists
+            .OrderByDescending(item => string.Equals(item.Name, "Favorites", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var playlist in playlists.Take(8))
+        {
+            var image = CreatePlaylistImage(playlist, 56);
+            var title = new TextBlock
+            {
+                Text = playlist.Name,
+                FontSize = 14,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var row = new Grid { ColumnSpacing = 12 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.Children.Add(image);
+            Grid.SetColumn(title, 1);
+            row.Children.Add(title);
+            var quick = new Button
+            {
+                Width = 272, Height = 58, Padding = new Thickness(0),
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(38, 255, 255, 255)),
+                BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(8),
+                Content = row, DataContext = playlist
+            };
+            quick.Click += SidebarPlaylistButton_Click;
+            HomeQuickLinks.Children.Add(quick);
+
+            var cover = CreatePlaylistImage(playlist, 150);
+            var playlistTitle = new TextBlock
+            {
+                Text = playlist.Name, FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 10, 0, 2)
+            };
+            var description = new TextBlock
+            {
+                Text = $"Playlist · {playlist.Tracks.Count} songs", FontSize = 12, Opacity = 0.7,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var cardContent = new StackPanel { Width = 150 };
+            cardContent.Children.Add(cover);
+            cardContent.Children.Add(playlistTitle);
+            cardContent.Children.Add(description);
+            var card = new Button
+            {
+                Width = 174, Height = 222, Padding = new Thickness(12),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(22, 255, 255, 255)),
+                BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(10),
+                Content = cardContent, DataContext = playlist
+            };
+            card.Click += SidebarPlaylistButton_Click;
+            HomePlaylistCards.Children.Add(card);
+        }
+
+        var recent = playlists.SelectMany(item => item.Tracks)
+            .Where(track => !string.IsNullOrWhiteSpace(track.Title))
+            .GroupBy(track => string.IsNullOrWhiteSpace(track.Id) ? track.Path : track.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First()).Take(12).ToList();
+        HydrateArtwork(recent);
+        foreach (var track in recent)
+        {
+            var coverImage = new Image { Source = track.Artwork, Stretch = Stretch.UniformToFill };
+            coverImage.SetBinding(Image.SourceProperty, new Microsoft.UI.Xaml.Data.Binding
+            {
+                Path = new Microsoft.UI.Xaml.PropertyPath(nameof(TrackItem.Artwork)),
+                Mode = Microsoft.UI.Xaml.Data.BindingMode.OneWay
+            });
+            var cover = new Border
+            {
+                Width = 150, Height = 150, CornerRadius = new CornerRadius(8),
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(44, 255, 255, 255)),
+                Child = coverImage
+            };
+            var title = new TextBlock
+            {
+                Text = track.Title, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 9, 0, 2)
+            };
+            var artist = new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(track.ArtistName) ? track.Subtitle : track.ArtistName,
+                FontSize = 12, Opacity = 0.7, TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var tileContent = new StackPanel { Width = 150 };
+            tileContent.Children.Add(cover);
+            tileContent.Children.Add(title);
+            tileContent.Children.Add(artist);
+            var tile = new Button
+            {
+                Width = 174, Height = 220, Padding = new Thickness(12),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(22, 255, 255, 255)),
+                BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(10),
+                Content = tileContent, DataContext = track
+            };
+            tile.Click += (_, _) => Play(track, recent, recent.IndexOf(track), true);
+            HomeRecentTracks.Children.Add(tile);
+        }
+    }
+
+    void HomeCarouselLeft_Click(object sender, RoutedEventArgs e) => ScrollHomeCarousel(sender, -1);
+    void HomeCarouselRight_Click(object sender, RoutedEventArgs e) => ScrollHomeCarousel(sender, 1);
+
+    void ScrollHomeCarousel(object sender, int direction)
+    {
+        if (sender is not Button { Tag: string targetName }) return;
+        var scrollViewer = targetName switch
+        {
+            "HomeQuickLinksScroll" => HomeQuickLinksScroll,
+            "HomePlaylistCardsScroll" => HomePlaylistCardsScroll,
+            "HomeRecentTracksScroll" => HomeRecentTracksScroll,
+            _ => null
+        };
+        if (scrollViewer is null) return;
+        AnimateHomeCarousel(scrollViewer, scrollViewer.HorizontalOffset + direction * 360, 320);
+    }
+
+    void HomeCarousel_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        // The cards are horizontal carousels, but a normal wheel gesture should
+        // keep scrolling the home page vertically instead of fighting the page.
+        var delta = e.GetCurrentPoint(HomeDashboard).Properties.MouseWheelDelta;
+        if (delta == 0) return;
+        var maxScroll = Math.Max(0, HomeDashboard.ExtentHeight - HomeDashboard.ViewportHeight);
+        HomeDashboard.ChangeView(null, Math.Clamp(HomeDashboard.VerticalOffset - delta * 1.1, 0, maxScroll), null, true);
+        e.Handled = true;
+    }
+
+    void UpdateHomeScrollThumb()
+    {
+        if (HomeScrollRail is null || HomeScrollThumb is null || HomeDashboard is null) return;
+        var viewport = HomeScrollRail.ActualHeight;
+        var scrollable = HomeDashboard.ExtentHeight > HomeDashboard.ViewportHeight + 2 && viewport > 0 &&
+                         HomeDashboard.Visibility == Visibility.Visible && HomePage.Visibility == Visibility.Visible;
+        HomeScrollRail.Visibility = scrollable ? Visibility.Visible : Visibility.Collapsed;
+        if (!scrollable) return;
+
+        var thumbHeight = Math.Clamp(viewport * HomeDashboard.ViewportHeight / HomeDashboard.ExtentHeight, 42, viewport);
+        HomeScrollThumb.Height = thumbHeight;
+        Canvas.SetLeft(HomeScrollThumb, (HomeScrollRail.ActualWidth - HomeScrollThumb.Width) / 2);
+        var maxThumbTop = Math.Max(0, viewport - thumbHeight);
+        var maxScroll = Math.Max(1, HomeDashboard.ExtentHeight - HomeDashboard.ViewportHeight);
+        Canvas.SetTop(HomeScrollThumb, maxThumbTop * HomeDashboard.VerticalOffset / maxScroll);
+    }
+
+    void HomeScrollRail_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var pointerY = e.GetCurrentPoint(HomeScrollRail).Position.Y;
+        var thumbTop = Canvas.GetTop(HomeScrollThumb);
+        if (pointerY >= thumbTop && pointerY <= thumbTop + HomeScrollThumb.Height)
+            _homeScrollThumbGrabOffset = pointerY - thumbTop;
+        else
+        {
+            _homeScrollThumbGrabOffset = HomeScrollThumb.Height / 2;
+            SetHomeScrollFromThumbTop(pointerY - _homeScrollThumbGrabOffset);
+        }
+        _homeScrollThumbDragging = true;
+        HomeScrollRail.CapturePointer(e.Pointer);
+        e.Handled = true;
+    }
+
+    void HomeScrollRail_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_homeScrollThumbDragging) return;
+        var pointerY = e.GetCurrentPoint(HomeScrollRail).Position.Y;
+        SetHomeScrollFromThumbTop(pointerY - _homeScrollThumbGrabOffset);
+        e.Handled = true;
+    }
+
+    void HomeScrollRail_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        _homeScrollThumbDragging = false;
+        HomeScrollRail.ReleasePointerCapture(e.Pointer);
+        e.Handled = true;
+    }
+
+    void SetHomeScrollFromThumbTop(double requestedTop)
+    {
+        var maxThumbTop = Math.Max(0, HomeScrollRail.ActualHeight - HomeScrollThumb.Height);
+        var maxScroll = Math.Max(0, HomeDashboard.ExtentHeight - HomeDashboard.ViewportHeight);
+        if (maxThumbTop <= 0 || maxScroll <= 0) return;
+        var ratio = Math.Clamp(requestedTop / maxThumbTop, 0, 1);
+        HomeDashboard.ChangeView(null, ratio * maxScroll, null, true);
+    }
+
+    void AnimateHomeCarousel(ScrollViewer scrollViewer, double requestedOffset, int durationMs)
+    {
+        if (_carouselScrollTimers.TryGetValue(scrollViewer, out var previous))
+        {
+            previous.Stop();
+            _carouselScrollTimers.Remove(scrollViewer);
+        }
+
+        var start = scrollViewer.HorizontalOffset;
+        var target = Math.Clamp(requestedOffset, 0, Math.Max(0, scrollViewer.ExtentWidth - scrollViewer.ViewportWidth));
+        if (Math.Abs(target - start) < 1) return;
+
+        var elapsed = Stopwatch.StartNew();
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(16);
+        timer.IsRepeating = true;
+        timer.Tick += (queueTimer, _) =>
+        {
+            var progress = Math.Clamp(elapsed.Elapsed.TotalMilliseconds / durationMs, 0, 1);
+            var eased = 1 - Math.Pow(1 - progress, 3);
+            scrollViewer.ChangeView(start + (target - start) * eased, null, null, true);
+            if (progress < 1) return;
+            queueTimer.Stop();
+            if (_carouselScrollTimers.TryGetValue(scrollViewer, out var current) && ReferenceEquals(current, queueTimer))
+                _carouselScrollTimers.Remove(scrollViewer);
+        };
+        _carouselScrollTimers[scrollViewer] = timer;
+        timer.Start();
+    }
+
+    Border CreatePlaylistImage(PlaylistItem playlist, double size)
+    {
+        var border = new Border
+        {
+            Width = size, Height = size, CornerRadius = new CornerRadius(8),
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(44, 255, 255, 255))
+        };
+        if (playlist.Cover is not null)
+            border.Child = new Image { Source = playlist.Cover, Stretch = Stretch.UniformToFill };
+        else if (string.Equals(playlist.Name, "Favorites", StringComparison.OrdinalIgnoreCase))
+            border.Child = new TextBlock { Text = "♥", FontSize = size * 0.42, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        else
+            border.Child = new FontIcon { Glyph = "\uE8D6", FontSize = size * 0.35, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        return border;
     }
 
     void SidebarPlaylistButton_Click(object sender, RoutedEventArgs e)
@@ -319,6 +868,9 @@ public sealed partial class MainWindow : Window
         _searchCancellation = searchCancellation;
         var cancellationToken = searchCancellation.Token;
 
+        HomeDashboard.Visibility = Visibility.Collapsed;
+        HomeHeading.Visibility = Visibility.Visible;
+        ResultsList.Visibility = Visibility.Visible;
         ShowPage(HomePage);
         _results.Clear();
         try
@@ -355,11 +907,11 @@ public sealed partial class MainWindow : Window
                     var id = ExtractVideoId(query);
                     if (id is not null)
                     {
-                        HomeHeading.Text = "YouTube Music link";
+                        HomeHeading.Text = "Online music link";
                         var item = new TrackItem
                         {
                             Title = "YouTube track",
-                            Subtitle = "YouTube Music",
+                            Subtitle = "Online music",
                             Id = id,
                             WebUrl = "https://music.youtube.com/watch?v=" + id,
                             Source = "YT MUSIC",
@@ -374,62 +926,45 @@ public sealed partial class MainWindow : Window
                 }
             }
 
-            // Otherwise: search both sources in parallel.
+            // Search the primary catalogue first. Only use SoundCloud when the
+            // primary search returns no tracks or fails.
             HomeHeading.Text = $"Results for \u201c{query}\u201d";
-            StatusText.Text = "Searching YouTube Music and SoundCloud…";
-
-            if (!_searchYouTubeMusic && !_searchSoundCloud)
-            {
-                StatusText.Text = "Enable at least one search source in Settings.";
-                return;
-            }
-
-            var ytTask = _searchYouTubeMusic
-                ? _yt.SearchAsync(query, _searchResultCount, cancellationToken)
-                : Task.FromResult(new List<TrackItem>());
-            var scTask = _searchSoundCloud
-                ? _sc.SearchAsync(query, _searchResultCount, cancellationToken)
-                : Task.FromResult(new List<TrackItem>());
-            var remaining = new HashSet<Task<List<TrackItem>>> { ytTask, scTask };
-            var ytCount = 0;
-            var scCount = 0;
+            StatusText.Text = "Searching for matches…";
             var errors = new List<string>();
-
-            while (remaining.Count > 0)
+            List<TrackItem> tracks = new();
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var completed = await Task.WhenAny(remaining);
-                remaining.Remove(completed);
-                try
-                {
-                    var tracks = await completed;
-                    if (!ReferenceEquals(_searchCancellation, searchCancellation)) return;
-                    if (ReferenceEquals(completed, ytTask)) ytCount = tracks.Count;
-                    else scCount = tracks.Count;
-                    _results.AddRange(tracks);
-                    HydrateArtwork(tracks);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    errors.Add(ex.Message);
-                }
+                tracks = await _yt.SearchAsync(query, _searchResultCount, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex) { errors.Add(ex.Message); }
 
-                if (remaining.Count > 0)
-                    StatusText.Text = _results.Count > 0
-                        ? $"Found {_results.Count} tracks; checking the other source…"
-                        : "Still searching the other source…";
+            if (!ReferenceEquals(_searchCancellation, searchCancellation)) return;
+            if (tracks.Count == 0)
+            {
+                StatusText.Text = "No matches yet — checking another catalogue…";
+                try { tracks = await _sc.SearchAsync(query, _searchResultCount, cancellationToken); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex) { errors.Add(ex.Message); }
             }
 
-            if (errors.Count > 0 && _results.Count == 0)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(_searchCancellation, searchCancellation)) return;
+            if (tracks.Count == 0 && errors.Count > 0)
                 StatusText.Text = "Search failed: " + string.Join("; ", errors);
-            else if (_results.Count == 0)
+            else if (tracks.Count == 0)
                 StatusText.Text = "Nothing found. Try different wording.";
             else
-                StatusText.Text = $"{_results.Count} tracks · YouTube Music {ytCount} · SoundCloud {scCount}";
+            {
+                // Keep artist identity as the strongest match signal. Popularity only
+                // breaks ties between similarly relevant tracks, so a famous but
+                // unrelated result cannot outrank the intended recording.
+                var ranked = tracks.OrderByDescending(track => SearchRelevance(query, track)).ToList();
+                _results.Clear();
+                _results.AddRange(ranked);
+                HydrateArtwork(ranked);
+                StatusText.Text = $"{_results.Count} matching tracks";
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception ex)
@@ -445,6 +980,34 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    static double SearchRelevance(string query, TrackItem track)
+    {
+        static string[] Tokens(string value) => Regex.Matches(value.ToLowerInvariant(), @"[\p{L}\p{N}]+")
+            .Select(match => match.Value).Where(token => token.Length > 1).Distinct().ToArray();
+
+        var wanted = Tokens(query);
+        if (wanted.Length == 0) return 0;
+        var artists = Tokens(track.ArtistName + " " + track.Subtitle).ToHashSet(StringComparer.Ordinal);
+        var titles = Tokens(track.Title).ToHashSet(StringComparer.Ordinal);
+        var artistHits = wanted.Count(artists.Contains);
+        var titleHits = wanted.Count(titles.Contains);
+        var artistCoverage = (double)artistHits / wanted.Length;
+        var titleCoverage = (double)titleHits / wanted.Length;
+        var score = artistCoverage * 100 + titleCoverage * 42;
+
+        var normalizedQuery = string.Join(' ', wanted);
+        var normalizedArtist = string.Join(' ', Tokens(track.ArtistName));
+        if (normalizedArtist.Length > 0 && (normalizedArtist == normalizedQuery || normalizedQuery.Contains(normalizedArtist, StringComparison.Ordinal)))
+            score += 24;
+
+        // SoundCloud supplies public playback and artist-follower counts. Use a
+        // logarithmic bonus so huge accounts help rank close matches without
+        // overpowering artist/title relevance.
+        score += Math.Log10(track.SearchPlayCount + 1d) * 2.5;
+        score += Math.Log10(track.SearchArtistFollowers + 1d) * 2.0;
+        return score;
+    }
+
     static string? ExtractVideoId(string url)
     {
         var m = System.Text.RegularExpressions.Regex.Match(url, @"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})");
@@ -455,17 +1018,128 @@ public sealed partial class MainWindow : Window
     {
         foreach (var item in items)
         {
-            if (item.Artwork is not null ||
-                !Uri.TryCreate(item.ArtworkUrl, UriKind.Absolute, out var uri) ||
-                (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)) continue;
-            try
+            if (item.Artwork is null && Uri.TryCreate(item.ArtworkUrl, UriKind.Absolute, out var uri) &&
+                (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
             {
-                // Loading from the URI avoids converting a non-seekable HttpClient
-                // response stream to IRandomAccessStream, which can fail on Windows.
-                item.Artwork = new BitmapImage { DecodePixelWidth = 128, UriSource = uri };
+                _ = LoadArtworkAsync(item, uri);
             }
-            catch { /* the row's music-note placeholder remains visible */ }
+            else if (string.Equals(item.Source, "SPOTIFY", StringComparison.OrdinalIgnoreCase) &&
+                     string.IsNullOrWhiteSpace(item.ArtworkUrl) && _artworkLookupAttempted.TryAdd(item, 0))
+            {
+                _ = ResolveMissingArtworkAsync(item);
+            }
         }
+    }
+
+    async Task ResolveMissingArtworkAsync(TrackItem track)
+    {
+        try
+        {
+            var query = string.Join(" ", new[] { track.Title, track.ArtistName }
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+            if (string.IsNullOrWhiteSpace(query)) return;
+            var matches = await _yt.SearchAsync(query, 5);
+            static string Normalize(string value) => Regex.Replace(value.ToLowerInvariant(), @"[^\p{L}\p{N}]", "");
+            var wantedTitle = Normalize(track.Title);
+            var wantedArtist = Normalize(track.ArtistName);
+            var match = matches
+                .Select(candidate =>
+                {
+                    var title = Normalize(candidate.Title);
+                    var titleScore = title == wantedTitle ? 3
+                        : title.Length > 0 && wantedTitle.Length > 0 &&
+                          (title.Contains(wantedTitle, StringComparison.Ordinal) || wantedTitle.Contains(title, StringComparison.Ordinal)) ? 2
+                        : 0;
+                    var artistText = Normalize(candidate.ArtistName + candidate.Subtitle);
+                    var artistScore = wantedArtist.Length > 0 && artistText.Contains(wantedArtist, StringComparison.Ordinal) ? 1 : 0;
+                    return (Candidate: candidate, TitleScore: titleScore, Score: titleScore + artistScore);
+                })
+                .Where(result => result.TitleScore >= 2)
+                .OrderByDescending(result => result.Score)
+                .Select(result => result.Candidate)
+                .FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate.ArtworkUrl));
+
+            if (match is null) return;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!string.IsNullOrWhiteSpace(track.ArtworkUrl)) return;
+                track.ArtworkUrl = match.ArtworkUrl;
+                track.Artwork = null;
+                HydrateArtwork(new[] { track });
+            });
+        }
+        catch { /* Artwork lookup must never interrupt playlist import or playback. */ }
+    }
+
+    static HttpClient CreateArtworkHttpClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("RiskMusicPlayer/1.0");
+        return client;
+    }
+
+    async Task LoadArtworkAsync(TrackItem item, Uri uri)
+    {
+        try
+        {
+            var bitmap = await LoadBitmapAsync(uri.AbsoluteUri, 320);
+            if (bitmap is null)
+            {
+                QueueMissingArtworkLookup(item);
+                return;
+            }
+            if (!string.Equals(item.ArtworkUrl, uri.AbsoluteUri, StringComparison.OrdinalIgnoreCase)) return;
+            item.Artwork = bitmap;
+            if (ReferenceEquals(_current, item)) NowArtwork.Source = bitmap;
+        }
+        catch
+        {
+            // Some image CDNs reject HttpClient requests but still serve the same
+            // image through WinUI's URI loader.
+            try { item.Artwork = new BitmapImage { DecodePixelWidth = 320, UriSource = uri }; }
+            catch { /* Keep the row placeholder when the artwork host is unavailable. */ }
+            QueueMissingArtworkLookup(item);
+        }
+    }
+
+    void QueueMissingArtworkLookup(TrackItem item)
+    {
+        if (string.Equals(item.Source, "SPOTIFY", StringComparison.OrdinalIgnoreCase) &&
+            _artworkLookupAttempted.TryAdd(item, 0))
+            _ = ResolveMissingArtworkAsync(item);
+    }
+
+    async Task<BitmapImage?> LoadBitmapAsync(string imageUrl, int decodeWidth)
+    {
+        if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)) return null;
+        await ArtworkDownloadGate.WaitAsync();
+        byte[] bytes;
+        try
+        {
+            if (!ArtworkBytes.TryGetValue(uri.AbsoluteUri, out var cachedBytes))
+            {
+                bytes = await ArtworkHttp.GetByteArrayAsync(uri);
+                if (bytes.Length == 0 || bytes.Length > 12 * 1024 * 1024) return null;
+                if (ArtworkBytes.Count > 300) ArtworkBytes.Clear();
+                ArtworkBytes.TryAdd(uri.AbsoluteUri, bytes);
+            }
+            else bytes = cachedBytes;
+        }
+        finally { ArtworkDownloadGate.Release(); }
+
+        using var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream))
+        {
+            writer.WriteBytes(bytes);
+            await writer.StoreAsync();
+            await writer.FlushAsync();
+            writer.DetachStream();
+        }
+        stream.Seek(0);
+        var bitmap = new BitmapImage { DecodePixelWidth = decodeWidth };
+        await bitmap.SetSourceAsync(stream);
+        return bitmap;
     }
 
     // ================= SELECTION =================
@@ -484,6 +1158,137 @@ public sealed partial class MainWindow : Window
 
     void ProfileBack_Click(object sender, RoutedEventArgs e) => ShowPage(HomePage);
 
+    void NowArtwork_Click(object sender, RoutedEventArgs e)
+    {
+        if (_current is null || _isExpandedPlayer) return;
+        _pageBeforeExpanded = new[] { HomePage, LibraryPage, SettingsPage, ProfilePage, EqualizerPage, PlaylistDetailPage }
+            .FirstOrDefault(page => page.Visibility == Visibility.Visible) ?? HomePage;
+        _isExpandedPlayer = true;
+        PlayerLayout.Children.Remove(TransportPanel);
+        ExpandedControlsHost.Children.Add(TransportPanel);
+        TransportPanel.Width = 440;
+        TransportPanel.HorizontalAlignment = HorizontalAlignment.Stretch;
+        PlayerBar.Visibility = Visibility.Collapsed;
+        ExpandedTitle.Text = _current.Title;
+        ExpandedArtistButton.Content = string.IsNullOrWhiteSpace(_current.ArtistName) ? _current.Subtitle : _current.ArtistName;
+        ExpandedArtwork.Source = _current.Artwork;
+        ShowPage(ExpandedPlayerPage);
+        if (!string.IsNullOrWhiteSpace(_current.ArtworkUrl))
+            _ = LoadExpandedArtworkAsync(_current.ArtworkUrl);
+        _visualizerTimer?.Start();
+    }
+
+    async Task LoadExpandedArtworkAsync(string artworkUrl)
+    {
+        var largeUrl = GetHighResolutionArtworkUrl(artworkUrl);
+        var image = await LoadBitmapAsync(largeUrl, 1440);
+        if (image is null && !string.Equals(largeUrl, artworkUrl, StringComparison.OrdinalIgnoreCase))
+            image = await LoadBitmapAsync(artworkUrl, 1440);
+        if (image is not null && _isExpandedPlayer && _current?.ArtworkUrl == artworkUrl)
+            ExpandedArtwork.Source = image;
+    }
+
+    static string GetHighResolutionArtworkUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return url;
+        // YouTube Music thumbnails support requesting a larger rendition by
+        // changing the size token. This matters because DecodePixelWidth alone
+        // cannot restore detail missing from the small search thumbnail.
+        var googleThumb = Regex.Match(url, @"=w\d+-h\d+", RegexOptions.IgnoreCase);
+        if (googleThumb.Success)
+            return url[..googleThumb.Index] + "=w1440-h1440" + url[(googleThumb.Index + googleThumb.Length)..];
+
+        if (url.Contains("i.ytimg.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var videoThumb = Regex.Replace(url, @"(?:default|mqdefault|hqdefault|sddefault)\.(?:jpg|webp)$",
+                "maxresdefault.jpg", RegexOptions.IgnoreCase);
+            if (!string.Equals(videoThumb, url, StringComparison.OrdinalIgnoreCase)) return videoThumb;
+        }
+        return url;
+    }
+
+    void CloseExpandedPlayer_Click(object sender, RoutedEventArgs e) => CloseExpandedPlayer();
+
+    void CloseExpandedPlayer()
+    {
+        if (!_isExpandedPlayer) return;
+        var returnPage = _pageBeforeExpanded ?? HomePage;
+        _isExpandedPlayer = false;
+        RestoreExpandedPlayerLayout();
+        ShowPage(returnPage);
+    }
+
+    void RestoreExpandedPlayerLayout()
+    {
+        if (!_isExpandedPlayer && PlayerBar.Visibility == Visibility.Visible) return;
+        ExpandedControlsHost.Children.Remove(TransportPanel);
+        PlayerLayout.Children.Add(TransportPanel);
+        TransportPanel.Width = 380;
+        TransportPanel.HorizontalAlignment = HorizontalAlignment.Stretch;
+        PlayerBar.Visibility = Visibility.Visible;
+        _visualizerTimer?.Stop();
+        var compact = Root.ActualWidth < 1120;
+        if (compact)
+        {
+            Grid.SetRow(TransportPanel, 1);
+            Grid.SetColumn(TransportPanel, 0);
+            Grid.SetColumnSpan(TransportPanel, 2);
+        }
+        else
+        {
+            Grid.SetRow(TransportPanel, 0);
+            Grid.SetColumn(TransportPanel, 1);
+            Grid.SetColumnSpan(TransportPanel, 1);
+        }
+    }
+
+    void BuildVisualizerBars()
+    {
+        VisualizerBars.Children.Clear();
+        _displayedVisualizerLevels = new double[42];
+        for (var index = 0; index < 42; index++)
+        {
+            VisualizerBars.Children.Add(new Border
+            {
+                Width = 5,
+                Height = 5,
+                VerticalAlignment = VerticalAlignment.Center,
+                CornerRadius = new CornerRadius(3),
+                Background = (Microsoft.UI.Xaml.Media.Brush)Root.Resources["AccentFillColorDefaultBrush"]
+            });
+        }
+    }
+
+    void UpdateVisualizer()
+    {
+        if (!_isExpandedPlayer) return;
+        var playing = _player.IsPlaying;
+        var levels = Volatile.Read(ref _latestVisualizerLevels);
+        for (var index = 0; index < VisualizerBars.Children.Count; index++)
+        {
+            if (VisualizerBars.Children[index] is not Border bar) continue;
+            var target = playing && index < levels.Length ? levels[index] : 0;
+            var current = _displayedVisualizerLevels[index];
+            current += (target - current) * (target > current ? 0.62 : 0.22);
+            _displayedVisualizerLevels[index] = current;
+            bar.Height = 7 + current * 112;
+        }
+    }
+
+    void ProfileAllTab_Click(object sender, RoutedEventArgs e)
+    {
+        _profileTracks.Clear();
+        _profileTracks.AddRange(_allProfileTracks);
+        ProfileDescription.Text = _profileTracks.Count == 0 ? "No tracks available" : $"{_profileTracks.Count} tracks";
+    }
+
+    void ProfilePopularTab_Click(object sender, RoutedEventArgs e)
+    {
+        _profileTracks.Clear();
+        _profileTracks.AddRange(_allProfileTracks.OrderByDescending(track => track.SearchPlayCount));
+        ProfileDescription.Text = _profileTracks.Count == 0 ? "No tracks available" : $"Popular tracks · {_profileTracks.Count} tracks";
+    }
+
     async void ArtistProfile_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: TrackItem track }) return;
@@ -499,22 +1304,70 @@ public sealed partial class MainWindow : Window
     async Task OpenArtistProfileAsync(TrackItem track)
     {
         if (track.ArtistName.Length == 0) return;
+        if (_isExpandedPlayer) CloseExpandedPlayer();
+        var profileToken = ++_profileLoadToken;
         ShowPage(ProfilePage);
         ProfileHeading.Text = track.ArtistName;
+        ProfileAvatarImage.Source = null;
+        ProfileBannerImage.Source = null;
         ProfileDescription.Text = "Loading artist tracks…";
         _profileTracks.Clear();
+        _allProfileTracks.Clear();
+        var cacheKey = !string.IsNullOrWhiteSpace(track.ArtistId) ? "yt:" + track.ArtistId
+            : !string.IsNullOrWhiteSpace(track.ArtistUrl) ? "sc:" + track.ArtistUrl
+            : "name:" + track.ArtistName.Trim();
         try
         {
-            var result = track.Source == "YT MUSIC"
-                ? await _yt.GetArtistTracksAsync(track.ArtistId)
-                : await _sc.GetArtistTracksAsync(track.ArtistUrl);
+            (string Name, string AvatarUrl, string BannerUrl, List<TrackItem> Tracks)? profile =
+                _artistProfileCache.TryGetValue(cacheKey, out var cached) ? cached : null;
+            if (profile is null && track.Source == "YT MUSIC" && !string.IsNullOrWhiteSpace(track.ArtistId))
+            {
+                try { profile = await _yt.GetArtistTracksAsync(track.ArtistId); } catch { }
+            }
+            else if (profile is null && track.Source == "SOUNDCLOUD" && !string.IsNullOrWhiteSpace(track.ArtistUrl))
+            {
+                try { profile = await _sc.GetArtistTracksAsync(track.ArtistUrl); } catch { }
+            }
+
+            if ((profile is null || profile.Value.Tracks.Count == 0) && !string.IsNullOrWhiteSpace(track.ArtistName))
+            {
+                try { profile = await _yt.FindArtistAsync(track.ArtistName); } catch { }
+            }
+            if ((profile is null || profile.Value.Tracks.Count == 0) && !string.IsNullOrWhiteSpace(track.ArtistName))
+            {
+                try
+                {
+                    var artistUrl = await _sc.FindArtistProfileUrlAsync(track.ArtistName);
+                    profile = await _sc.GetArtistTracksAsync(artistUrl);
+                }
+                catch { }
+            }
+            if (profile is null) throw new InvalidOperationException("No matching artist profile was found.");
+            if (profileToken != _profileLoadToken) return;
+            var result = profile.Value;
+            _artistProfileCache[cacheKey] = result;
             ProfileHeading.Text = result.Name;
-            foreach (var item in result.Tracks) _profileTracks.Add(item);
+            _allProfileTracks = result.Tracks;
+            _profileTracks.AddRange(_allProfileTracks);
             HydrateArtwork(_profileTracks);
-            ProfileDescription.Text = $"{_profileTracks.Count} tracks · Select a song to play";
+            if (!string.IsNullOrWhiteSpace(result.AvatarUrl))
+                _ = LoadProfileImageAsync(ProfileAvatarImage, result.AvatarUrl, 512);
+            if (!string.IsNullOrWhiteSpace(result.BannerUrl))
+                _ = LoadProfileImageAsync(ProfileBannerImage, result.BannerUrl, 1600);
+            ProfileDescription.Text = $"{_profileTracks.Count} tracks";
             if (_profileTracks.Count == 0) ProfileDescription.Text = "No tracks were available for this artist.";
         }
-        catch (Exception ex) { ProfileDescription.Text = "Could not load artist: " + ex.Message; }
+        catch
+        {
+            if (profileToken == _profileLoadToken)
+                ProfileDescription.Text = "Could not load this artist profile.";
+        }
+    }
+
+    async Task LoadProfileImageAsync(Image target, string url, int decodeWidth)
+    {
+        var image = await LoadBitmapAsync(url, decodeWidth);
+        if (image is not null) target.Source = image;
     }
 
     void ProfileTracksList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -558,6 +1411,13 @@ public sealed partial class MainWindow : Window
         NowArtistButton.Visibility = NowArtistButton.Content?.ToString()?.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         NowArtistButton.IsEnabled = track.ArtistName.Length > 0;
         NowArtwork.Source = track.Artwork;
+        if (_isExpandedPlayer)
+        {
+            ExpandedTitle.Text = track.Title;
+            ExpandedArtistButton.Content = track.ArtistName.Length > 0 ? track.ArtistName : track.Subtitle;
+            ExpandedArtwork.Source = track.Artwork;
+            if (!string.IsNullOrWhiteSpace(track.ArtworkUrl)) _ = LoadExpandedArtworkAsync(track.ArtworkUrl);
+        }
         ElapsedText.Text = "0:00";
         DurationText.Text = track.DurationLabel.Length > 0 ? track.DurationLabel : "0:00";
         SetSeek(0);
@@ -568,18 +1428,24 @@ public sealed partial class MainWindow : Window
 
             if (string.Equals(track.Source, "SPOTIFY", StringComparison.OrdinalIgnoreCase))
             {
-                StatusText.Text = $"Finding {track.Title} on YouTube Music…";
+                StatusText.Text = $"Finding another version of {track.Title}…";
                 var matches = await _yt.SearchAsync($"{track.Title} {track.ArtistName}", 1);
                 if (token != _loadToken) return;
                 if (matches.Count == 0) throw new InvalidOperationException("No playable match was found for this Spotify track.");
                 var match = matches[0];
                 track.Source = match.Source;
                 track.Id = match.Id;
+                track.ArtistName = match.ArtistName;
+                track.ArtistId = match.ArtistId;
+                track.ArtistUrl = match.ArtistUrl;
                 track.IsOnline = true;
                 track.WebUrl = match.WebUrl;
                 track.ArtworkUrl = match.ArtworkUrl;
                 track.Artwork = match.Artwork;
                 track.DurationLabel = match.DurationLabel;
+                HydrateArtwork(new[] { track });
+                if (_isExpandedPlayer && !string.IsNullOrWhiteSpace(track.ArtworkUrl))
+                    _ = LoadExpandedArtworkAsync(track.ArtworkUrl);
                 url = await _yt.ResolveStreamUrlAsync(track.Id, force: true, quality: _streamingQuality);
                 track.Path = url;
                 track.ResolvedAt = DateTimeOffset.UtcNow;
@@ -782,15 +1648,10 @@ public sealed partial class MainWindow : Window
                 Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(
                     Windows.UI.Color.FromArgb(0, 0, 0, 0))
             };
-            cover.Children.Add(new TextBlock
-            {
-                Text = "♫",
-                FontSize = 20,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            });
             if (playlist.Cover is not null)
                 cover.Children.Add(new Image { Source = playlist.Cover, Stretch = Stretch.UniformToFill });
+            else
+                cover.Children.Add(new FontIcon { Glyph = "\uE8D6", FontSize = 18, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
             Grid.SetColumn(cover, 0);
             rowGrid.Children.Add(cover);
 
@@ -844,9 +1705,7 @@ public sealed partial class MainWindow : Window
                 Padding = new Thickness(8),
                 CornerRadius = new CornerRadius(8),
                 Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(
-                    string.Equals(playlist.Name, "Favorites", StringComparison.OrdinalIgnoreCase)
-                        ? Windows.UI.Color.FromArgb(48, 38, 132, 224)
-                        : Windows.UI.Color.FromArgb(28, 255, 255, 255)),
+                    Windows.UI.Color.FromArgb(28, 255, 255, 255)),
                 BorderThickness = new Thickness(0)
             };
             rowButton.Click += (_, _) =>
@@ -1203,11 +2062,18 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            var artistUrl = track.ArtistUrl;
+            if (string.IsNullOrWhiteSpace(artistUrl) &&
+                string.Equals(track.Source, "YT MUSIC", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(track.ArtistId))
+                artistUrl = "https://music.youtube.com/channel/" + Uri.EscapeDataString(track.ArtistId);
             await _discord.UpdateAsync(
             _discordApplicationId,
             track.Title,
             string.IsNullOrWhiteSpace(track.ArtistName) ? track.Subtitle : track.ArtistName,
             track.ArtworkUrl,
+            track.WebUrl,
+            artistUrl,
             duration,
             _player.Position);
             DispatcherQueue.TryEnqueue(() => UpdateDiscordConnectionControls());
@@ -1403,14 +2269,9 @@ public sealed partial class MainWindow : Window
     void PlaylistRow_Loaded(object sender, RoutedEventArgs e)
     {
         if (sender is not Border surface || surface.DataContext is not PlaylistItem playlist) return;
-        var isFavorites = string.Equals(playlist.Name, "Favorites", StringComparison.OrdinalIgnoreCase);
-        surface.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(isFavorites
-            ? Windows.UI.Color.FromArgb(52, 38, 132, 224)
-            : Windows.UI.Color.FromArgb(0, 0, 0, 0));
-        surface.BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(isFavorites
-            ? Windows.UI.Color.FromArgb(88, 105, 190, 255)
-            : Windows.UI.Color.FromArgb(0, 0, 0, 0));
-        surface.BorderThickness = new Thickness(isFavorites ? 1 : 0);
+        surface.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
+        surface.BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
+        surface.BorderThickness = new Thickness(0);
     }
 
     void OpenPlaylist(PlaylistItem playlist)
@@ -1482,7 +2343,7 @@ public sealed partial class MainWindow : Window
 
     async void ImportPlaylist_Click(object sender, RoutedEventArgs e)
     {
-        var linkBox = new TextBox { PlaceholderText = "Paste a Spotify, SoundCloud, or YouTube Music playlist link", MinWidth = 420 };
+        var linkBox = new TextBox { PlaceholderText = "Paste a Spotify or online playlist link", MinWidth = 420 };
         var dialog = new ContentDialog
         {
             Title = "Import playlist",
@@ -1505,7 +2366,7 @@ public sealed partial class MainWindow : Window
                 (name, description, artworkUrl, tracks) = await _sc.GetPlaylistAsync(uri.ToString());
             else if (uri.Host.Contains("youtube.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Contains("youtu.be", StringComparison.OrdinalIgnoreCase))
                 (name, description, artworkUrl, tracks) = await _yt.GetPlaylistAsync(uri.ToString());
-            else throw new InvalidOperationException("Use a Spotify, SoundCloud, or YouTube Music playlist link.");
+            else throw new InvalidOperationException("Use a Spotify or supported online playlist link.");
 
             var playlist = new PlaylistItem
             {
@@ -1521,7 +2382,7 @@ public sealed partial class MainWindow : Window
             PlaylistList.SelectedItem = null;
             OpenPlaylist(playlist);
             if (uri.Host.Contains("spotify", StringComparison.OrdinalIgnoreCase))
-                StatusText.Text = $"Imported {tracks.Count} Spotify tracks. Tracks play through matching YouTube Music versions; Spotify's public embed provides up to 50 tracks.";
+                StatusText.Text = $"Imported {tracks.Count} Spotify tracks. Online versions are matched for playback; Spotify's public embed provides up to 50 tracks.";
         }
         catch (Exception ex)
         {
@@ -1620,8 +2481,8 @@ public sealed partial class MainWindow : Window
         RefreshTrackRows();
         var tracksPage = new ScrollViewer { Content = trackRows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 300 };
         var tabs = new TabView { IsAddTabButtonVisible = false, MinHeight = 350 };
-        tabs.TabItems.Add(new TabViewItem { Header = "Basic info", Content = basicInfo });
-        tabs.TabItems.Add(new TabViewItem { Header = "Tracks", Content = tracksPage });
+        tabs.TabItems.Add(new TabViewItem { Header = "Basic info", Content = basicInfo, IsClosable = false });
+        tabs.TabItems.Add(new TabViewItem { Header = "Tracks", Content = tracksPage, IsClosable = false });
         var dialog = new ContentDialog
         {
             Title = "Edit playlist",
@@ -1667,11 +2528,49 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { StatusText.Text = "Could not save the playlist cover: " + ex.Message; }
     }
 
+    void MigrateLegacyDataDirectory()
+    {
+        var legacy = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VYBE");
+        if (!Directory.Exists(legacy)) return;
+        try
+        {
+            if (!Directory.Exists(_dataDir))
+            {
+                Directory.Move(legacy, _dataDir);
+                return;
+            }
+            foreach (var directory in Directory.EnumerateDirectories(legacy, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(legacy, directory);
+                Directory.CreateDirectory(Path.Combine(_dataDir, relative));
+            }
+            foreach (var file in Directory.EnumerateFiles(legacy, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(legacy, file);
+                var destination = Path.Combine(_dataDir, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                if (!File.Exists(destination)) File.Copy(file, destination);
+            }
+        }
+        catch { }
+    }
+
     void LoadPlaylistCover(PlaylistItem playlist)
     {
         try
         {
-            var source = File.Exists(playlist.CoverPath) ? playlist.CoverPath : playlist.CoverUrl;
+            var source = playlist.CoverPath;
+            var legacyData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VYBE");
+            var legacyPrefix = legacyData.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!File.Exists(source) && source.StartsWith(legacyPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var relative = Path.GetRelativePath(legacyData, source);
+                var migrated = Path.Combine(_dataDir, relative);
+                if (File.Exists(migrated)) source = playlist.CoverPath = migrated;
+            }
+            if (!File.Exists(source)) source = playlist.CoverUrl;
             playlist.Cover = Uri.TryCreate(source, UriKind.Absolute, out var uri) ? new BitmapImage(uri) : null;
         }
         catch { playlist.Cover = null; }
@@ -1699,12 +2598,16 @@ public sealed partial class MainWindow : Window
             "Rose" => (Background: Windows.UI.Color.FromArgb(255, 38, 17, 30), Panel: Windows.UI.Color.FromArgb(255, 58, 27, 44), Card: Windows.UI.Color.FromArgb(255, 70, 35, 54), Stroke: Windows.UI.Color.FromArgb(255, 115, 63, 88), Accent: Windows.UI.Color.FromArgb(255, 255, 145, 190)),
             "Forest" => (Background: Windows.UI.Color.FromArgb(255, 13, 32, 25), Panel: Windows.UI.Color.FromArgb(255, 23, 49, 37), Card: Windows.UI.Color.FromArgb(255, 31, 62, 46), Stroke: Windows.UI.Color.FromArgb(255, 56, 99, 73), Accent: Windows.UI.Color.FromArgb(255, 120, 225, 165)),
             "Light" => (Background: Windows.UI.Color.FromArgb(255, 245, 246, 250), Panel: Windows.UI.Color.FromArgb(255, 255, 255, 255), Card: Windows.UI.Color.FromArgb(255, 238, 240, 247), Stroke: Windows.UI.Color.FromArgb(255, 210, 213, 224), Accent: Windows.UI.Color.FromArgb(255, 35, 103, 190)),
-            _ => (Background: Windows.UI.Color.FromArgb(255, 24, 22, 30), Panel: Windows.UI.Color.FromArgb(255, 39, 36, 48), Card: Windows.UI.Color.FromArgb(255, 47, 44, 57), Stroke: Windows.UI.Color.FromArgb(255, 72, 68, 83), Accent: Windows.UI.Color.FromArgb(255, 125, 211, 252))
+            _ => (Background: Windows.UI.Color.FromArgb(255, 17, 18, 20), Panel: Windows.UI.Color.FromArgb(255, 27, 28, 31), Card: Windows.UI.Color.FromArgb(255, 37, 38, 42), Stroke: Windows.UI.Color.FromArgb(255, 59, 60, 65), Accent: Windows.UI.Color.FromArgb(255, 125, 211, 252))
         };
         Root.RequestedTheme = light ? ElementTheme.Light : ElementTheme.Dark;
         _lightTheme = light;
-        Root.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(palette.Background);
-        SetThemeBrush("GlassPanelBrush", palette.Panel);
+        // Tint the content root with the selected palette while retaining acrylic
+        // translucency beneath it.
+        SetThemeBrush("ThemeBackgroundBrush", Windows.UI.Color.FromArgb(224,
+            palette.Background.R, palette.Background.G, palette.Background.B));
+        Root.Background = (Microsoft.UI.Xaml.Media.Brush)Root.Resources["ThemeBackgroundBrush"];
+        SetThemeBrush("GlassPanelBrush", Windows.UI.Color.FromArgb(174, palette.Panel.R, palette.Panel.G, palette.Panel.B));
         SetThemeBrush("CardBackgroundFillColorSecondaryBrush", palette.Card);
         SetThemeBrush("CardStrokeColorDefaultBrush", palette.Stroke);
         SetThemeBrush("ThemeAccentBrush", palette.Accent);
@@ -1732,7 +2635,7 @@ public sealed partial class MainWindow : Window
             button.Background = active && button != SettingsNav
                 ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(42, _themeAccent.R, _themeAccent.G, _themeAccent.B))
                 : new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
-            if (button.Content is FontIcon icon)
+            if (button.Content is StackPanel stack && stack.Children.FirstOrDefault() is FontIcon icon)
                 icon.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(active ? _themeAccent : _lightTheme
                     ? Windows.UI.Color.FromArgb(255, 70, 70, 76)
                     : Windows.UI.Color.FromArgb(255, 228, 228, 232));
@@ -1895,8 +2798,10 @@ public sealed partial class MainWindow : Window
     void SearchSourceToggle_Toggled(object sender, RoutedEventArgs e)
     {
         if (_initializing) return;
-        _searchYouTubeMusic = SearchYouTubeToggle.IsOn;
-        _searchSoundCloud = SearchSoundCloudToggle.IsOn;
+        // Source selectors are intentionally hidden; keep both catalogues enabled
+        // for primary-search then fallback behavior.
+        _searchYouTubeMusic = true;
+        _searchSoundCloud = true;
         SaveSettings_Click(sender, e);
     }
 
@@ -2039,8 +2944,8 @@ public sealed partial class MainWindow : Window
                     _startWithWindows = s.StartWithWindows;
                     _rememberVolume = s.RememberVolume;
                     _savedVolume = s.Volume;
-                    _searchYouTubeMusic = s.SearchYouTubeMusic;
-                    _searchSoundCloud = s.SearchSoundCloud;
+                    _searchYouTubeMusic = true;
+                    _searchSoundCloud = true;
                     _searchResultCount = Math.Clamp(s.SearchResultCount, 5, 50);
                     _preferredDownloadFormat = s.PreferredDownloadFormat is "mp3" or "wav"
                         ? s.PreferredDownloadFormat
@@ -2094,8 +2999,10 @@ public sealed partial class MainWindow : Window
         }
         StartWithWindowsToggle.IsOn = _startWithWindows;
         RememberVolumeToggle.IsOn = _rememberVolume;
-        SearchYouTubeToggle.IsOn = _searchYouTubeMusic;
-        SearchSoundCloudToggle.IsOn = _searchSoundCloud;
+        _searchYouTubeMusic = true;
+        _searchSoundCloud = true;
+        SearchYouTubeToggle.IsOn = true;
+        SearchSoundCloudToggle.IsOn = true;
         SearchResultCountSlider.Value = _searchResultCount;
         SearchResultCountText.Text = _searchResultCount.ToString();
         for (var index = 0; index < PreferredDownloadFormatBox.Items.Count; index++)

@@ -2,7 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System.IO;
 
-namespace Vybe.App;
+namespace Risk.App;
 
 public partial class App : Application
 {
@@ -32,13 +32,13 @@ public partial class App : Application
 
             _window = new Window
             {
-                Title = "<3 could not start",
+                Title = "Risk could not start",
                 Content = new ScrollViewer
                 {
                     Padding = new Thickness(24),
                     Content = new TextBlock
                     {
-                        Text = "<3 hit an error while opening:\n\n" + ex,
+                        Text = "Risk hit an error while opening:\n\n" + ex,
                         TextWrapping = TextWrapping.Wrap
                     }
                 }

@@ -8,7 +8,9 @@ internal static class RiskLauncher
     [STAThread]
     private static void Main()
     {
-        string runtime = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "src", "risk");
+        DirectoryInfo appDirectory = Directory.GetParent(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+        string installRoot = appDirectory == null ? AppDomain.CurrentDomain.BaseDirectory : appDirectory.FullName;
+        string runtime = Path.Combine(installRoot, "Runtime");
         string player = Path.Combine(runtime, "Risk.exe");
         if (!File.Exists(player))
         {

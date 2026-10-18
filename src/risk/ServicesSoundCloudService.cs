@@ -2,7 +2,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace Vybe.App.Services;
+namespace Risk.App.Services;
 
 /// <summary>
 /// SoundCloud without the official API, without an OAuth token and without the web widget.
@@ -80,7 +80,10 @@ public sealed class SoundCloudService
                 Source = "SOUNDCLOUD",
                 IsOnline = true,
                 DurationLabel = Format(TimeSpan.FromMilliseconds(item.TryGetProperty("duration", out var d) ? d.GetDouble() : 0)),
-                ArtworkUrl = Str(item, "artwork_url").Replace("-large", "-t500x500")
+                ArtworkUrl = Str(item, "artwork_url").Replace("-large", "-t500x500"),
+                SearchPlayCount = ReadLong(item, "playback_count"),
+                SearchArtistFollowers = item.TryGetProperty("user", out var statsUser)
+                    ? ReadLong(statsUser, "followers_count") : 0
             });
         }
         lock (_searchCacheGate)
@@ -112,10 +115,15 @@ public sealed class SoundCloudService
         IsOnline = track.IsOnline,
         ArtworkUrl = track.ArtworkUrl,
         Artwork = track.Artwork,
-        ResolvedAt = track.ResolvedAt
+        ResolvedAt = track.ResolvedAt,
+        SearchPlayCount = track.SearchPlayCount,
+        SearchArtistFollowers = track.SearchArtistFollowers
     };
 
-    public async Task<(string Name, List<TrackItem> Tracks)> GetArtistTracksAsync(
+    static long ReadLong(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value) && value.TryGetInt64(out var number) ? number : 0;
+
+    public async Task<(string Name, string AvatarUrl, string BannerUrl, List<TrackItem> Tracks)> GetArtistTracksAsync(
         string artistUrl, CancellationToken ct = default)
     {
         var clientId = await ClientIdAsync(ct);
@@ -124,6 +132,8 @@ public sealed class SoundCloudService
         var artist = artistDoc.RootElement;
         var artistId = artist.TryGetProperty("id", out var id) ? id.ToString() : "";
         var artistName = Str(artist, "username");
+        var avatarUrl = Str(artist, "avatar_url").Replace("-large", "-t500x500");
+        var bannerUrl = ReadArtistBanner(artist);
         if (artistId.Length == 0) throw new InvalidOperationException("SoundCloud did not return this artist profile.");
 
         var tracksUrl = $"https://api-v2.soundcloud.com/users/{artistId}/tracks?client_id={clientId}&limit=100&offset=0";
@@ -150,11 +160,49 @@ public sealed class SoundCloudService
                     Source = "SOUNDCLOUD",
                     IsOnline = true,
                     DurationLabel = Format(TimeSpan.FromMilliseconds(item.TryGetProperty("duration", out var duration) ? duration.GetDouble() : 0)),
-                    ArtworkUrl = Str(item, "artwork_url").Replace("-large", "-t500x500")
+                    ArtworkUrl = Str(item, "artwork_url").Replace("-large", "-t500x500"),
+                    SearchPlayCount = ReadLong(item, "playback_count")
                 });
             }
         }
-        return (artistName, tracks);
+        return (artistName, avatarUrl, bannerUrl, tracks);
+    }
+
+    public async Task<string> FindArtistProfileUrlAsync(string artistName, CancellationToken ct = default)
+    {
+        var clientId = await ClientIdAsync(ct).ConfigureAwait(false);
+        var url = $"https://api-v2.soundcloud.com/search/users?q={Uri.EscapeDataString(artistName)}&client_id={clientId}&limit=30";
+        using var doc = JsonDocument.Parse(await Http.GetStringAsync(url, ct).ConfigureAwait(false));
+        if (!doc.RootElement.TryGetProperty("collection", out var collection) || collection.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("No matching artist profile was found.");
+
+        static string Normalize(string value) => Regex.Replace(value.ToLowerInvariant(), @"[^\p{L}\p{N}]+", " ").Trim();
+        var query = Normalize(artistName);
+        var candidates = collection.EnumerateArray()
+            .Select(item => (Name: Str(item, "username"), Url: Str(item, "permalink_url")))
+            .Where(candidate => candidate.Name.Length > 0 && candidate.Url.Length > 0)
+            .OrderByDescending(candidate => Normalize(candidate.Name) == query)
+            .ThenByDescending(candidate => Normalize(candidate.Name).StartsWith(query, StringComparison.Ordinal))
+            .ToList();
+        return candidates.FirstOrDefault().Url is { Length: > 0 } profileUrl
+            ? profileUrl
+            : throw new InvalidOperationException("No matching artist profile was found.");
+    }
+
+    static string ReadArtistBanner(JsonElement artist)
+    {
+        if (!artist.TryGetProperty("visuals", out var visuals)) return "";
+        if (visuals.ValueKind == JsonValueKind.Object && visuals.TryGetProperty("visuals", out var nested))
+            visuals = nested;
+        if (visuals.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var visual in visuals.EnumerateArray())
+            {
+                var url = Str(visual, "visual_url");
+                if (url.Length > 0) return url;
+            }
+        }
+        return Str(visuals, "visual_url");
     }
 
     public async Task<(string Name, string Description, string ArtworkUrl, List<TrackItem> Tracks)> GetPlaylistAsync(

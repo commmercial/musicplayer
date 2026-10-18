@@ -133,28 +133,40 @@ $form.Controls.Add($progress)
 
 $cancel = New-Object Windows.Forms.Button
 $cancel.Text = 'Cancel'
-$cancel.Location = New-Object Drawing.Point(272, 395)
-$cancel.Size = New-Object Drawing.Size(90, 33)
+$cancel.Location = New-Object Drawing.Point(176, 395)
+$cancel.Size = New-Object Drawing.Size(86, 33)
 $cancel.add_Click({ $form.Close() })
 $form.Controls.Add($cancel)
 
+$reinstall = New-Object Windows.Forms.Button
+$reinstall.Text = 'Reinstall'
+$reinstall.Location = New-Object Drawing.Point(269, 395)
+$reinstall.Size = New-Object Drawing.Size(91, 33)
+$reinstall.Enabled = $false
+$form.Controls.Add($reinstall)
+
 $uninstall = New-Object Windows.Forms.Button
 $uninstall.Text = 'Uninstall'
-$uninstall.Location = New-Object Drawing.Point(369, 395)
-$uninstall.Size = New-Object Drawing.Size(94, 33)
+$uninstall.Location = New-Object Drawing.Point(367, 395)
+$uninstall.Size = New-Object Drawing.Size(92, 33)
 $uninstall.Enabled = $false
 if (Test-Path $uninstallKey) {
     $existingInstall = (Get-ItemProperty -LiteralPath $uninstallKey -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation
-    if ($existingInstall) { $uninstall.Enabled = Test-Path (Join-Path $existingInstall 'uninstall.exe') }
+        if ($existingInstall) {
+            $uninstall.Enabled = (Test-Path (Join-Path $existingInstall 'Maintenance\uninstall.exe')) -or
+                (Test-Path (Join-Path $existingInstall 'uninstall.exe'))
+        }
 }
 if (-not $uninstall.Enabled) {
     $rememberedInstall = Get-InstallFolder
-    $uninstall.Enabled = Test-Path (Join-Path $rememberedInstall 'uninstall.exe')
+    $uninstall.Enabled = (Test-Path (Join-Path $rememberedInstall 'Maintenance\uninstall.exe')) -or
+        (Test-Path (Join-Path $rememberedInstall 'uninstall.exe'))
 }
 $uninstall.add_Click({
     $existing = (Get-ItemProperty -LiteralPath $uninstallKey -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation
     if (-not $existing) { $existing = Get-InstallFolder }
-    $uninstaller = Join-Path $existing 'uninstall.exe'
+    $uninstaller = Join-Path $existing 'Maintenance\uninstall.exe'
+    if (-not (Test-Path -LiteralPath $uninstaller)) { $uninstaller = Join-Path $existing 'uninstall.exe' }
     if (-not (Test-Path -LiteralPath $uninstaller)) {
         [Windows.Forms.MessageBox]::Show($form, 'The Risk uninstaller could not be found in the selected installation folder.', 'Uninstall Risk', 'OK', 'Error') | Out-Null
         return
@@ -168,13 +180,13 @@ $form.Controls.Add($uninstall)
 
 $install = New-Object Windows.Forms.Button
 $install.Text = 'Install'
-$install.Location = New-Object Drawing.Point(470, 395)
-$install.Size = New-Object Drawing.Size(90, 33)
+$install.Location = New-Object Drawing.Point(466, 395)
+$install.Size = New-Object Drawing.Size(94, 33)
 $form.Controls.Add($install)
 $form.AcceptButton = $install
 $form.CancelButton = $cancel
 
-$install.add_Click({
+function Install-Risk {
     try {
         $version = [Environment]::OSVersion.Version
         if ($version.Major -lt 10 -or ($version.Major -eq 10 -and $version.Build -lt 19041)) {
@@ -204,26 +216,6 @@ $install.add_Click({
 
         $archive = [IO.Compression.ZipFile]::OpenRead($payload)
         try {
-            # Mirror the repository's src\risk organization while keeping
-            # runtime dependencies together, as .NET and WinUI load them
-            # relative to the app folder.
-            $legacyAppDir = Join-Path $installDir 'App'
-            $legacyDeps = Join-Path $legacyAppDir 'Risk.deps.json'
-            $legacyRuntimeDir = Join-Path $legacyAppDir 'Runtime'
-            $runtimeDir = Join-Path $legacyAppDir 'src\risk'
-            if (-not (Test-Path -LiteralPath $runtimeDir) -and
-                ((Test-Path -LiteralPath $legacyRuntimeDir) -or (Test-Path -LiteralPath $legacyDeps))) {
-                [IO.Directory]::CreateDirectory($runtimeDir) | Out-Null
-                if (Test-Path -LiteralPath $legacyRuntimeDir) {
-                    Get-ChildItem -LiteralPath $legacyRuntimeDir -Force |
-                        Move-Item -Destination $runtimeDir
-                    Remove-Item -LiteralPath $legacyRuntimeDir -Force
-                }
-                if (Test-Path -LiteralPath $legacyDeps) {
-                    Get-ChildItem -LiteralPath $legacyAppDir -Force |
-                        Where-Object { $_.Name -ne 'src' } | Move-Item -Destination $runtimeDir
-                }
-            }
             $count = [Math]::Max(1, $archive.Entries.Count)
             for ($i = 0; $i -lt $archive.Entries.Count; $i++) {
                 $entry = $archive.Entries[$i]
@@ -245,17 +237,40 @@ $install.add_Click({
 
         $appDir = Join-Path $installDir 'App'
         $appExe = Join-Path $appDir 'Risk.exe'
-        $runtimeDir = Join-Path $appDir 'src\risk'
+        $runtimeDir = Join-Path $installDir 'Runtime'
         $runtimeExe = Join-Path $runtimeDir 'Risk.exe'
-        $uninstaller = Join-Path $installDir 'uninstall.exe'
+        $uninstaller = Join-Path $installDir 'Maintenance\uninstall.exe'
         if (-not (Test-Path $appExe) -or -not (Test-Path $runtimeExe)) { throw 'Risk runtime files were not found in the installed files.' }
         if (-not (Test-Path $uninstaller)) { throw 'The standalone uninstaller was not found in the installed files.' }
+
+        # Clean the experimental categorized runtime layout from prior builds.
+        # Current .NET probing expects published dependencies alongside Risk.exe.
+        foreach ($oldRuntimeGroup in @('Framework','WindowsPlatform','Services','Native','Languages')) {
+            $oldGroupPath = Join-Path $runtimeDir $oldRuntimeGroup
+            if (Test-Path -LiteralPath $oldGroupPath -PathType Container) {
+                Remove-Item -LiteralPath $oldGroupPath -Recurse -Force
+            }
+        }
+
+        # Remove only the obsolete app payload from older installs once the
+        # replacement runtime, launcher, and uninstaller are all in place.
+        $legacySourceDir = Join-Path $appDir 'src'
+        $legacyRuntimeDir = Join-Path $appDir 'Runtime'
+        $legacyUninstaller = Join-Path $installDir 'uninstall.exe'
+        foreach ($legacyPath in @($legacySourceDir, $legacyRuntimeDir)) {
+            if (Test-Path -LiteralPath $legacyPath -PathType Container) {
+                Remove-Item -LiteralPath $legacyPath -Recurse -Force
+            }
+        }
+        if (Test-Path -LiteralPath $legacyUninstaller -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyUninstaller -Force
+        }
 
         $desktop = [Environment]::GetFolderPath('DesktopDirectory')
         $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Risk'
         [IO.Directory]::CreateDirectory($menu) | Out-Null
         $shell = New-Object -ComObject WScript.Shell
-        $appIconPath = Join-Path $runtimeDir 'Assets\app-icon-v2.ico'
+        $appIconPath = Join-Path $installDir 'Assets\app-icon-v2.ico'
         foreach ($shortcutInfo in @(
             @{ Path = (Join-Path $desktop 'Risk.lnk'); Target = $appExe; WorkingDirectory = $appDir },
             @{ Path = (Join-Path $menu 'Risk.lnk'); Target = $appExe; WorkingDirectory = $appDir },
@@ -280,6 +295,7 @@ $install.add_Click({
         $install.Text = 'Installed'
         $install.Enabled = $false
         $uninstall.Enabled = $true
+        $reinstall.Enabled = $true
         if ($launch.Checked) {
             Start-Process -FilePath $appExe -WorkingDirectory $appDir
             $form.Close()
@@ -291,6 +307,81 @@ $install.add_Click({
         $folder.Enabled = $true
         [Windows.Forms.MessageBox]::Show($form, $_.Exception.Message, 'Install Risk', 'OK', 'Error') | Out-Null
     }
+}
+
+$install.add_Click({ Install-Risk })
+
+$reinstall.add_Click({
+    $existingInstall = (Get-ItemProperty -LiteralPath $uninstallKey -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation
+    if (-not $existingInstall) { $existingInstall = Get-InstallFolder }
+    $existingInstall = [IO.Path]::GetFullPath($existingInstall.TrimEnd('\'))
+    if (-not (Test-Path -LiteralPath (Join-Path $existingInstall 'App\Risk.exe'))) {
+        [Windows.Forms.MessageBox]::Show($form, 'The existing Risk installation could not be found. Use Install to set it up.', 'Reinstall Risk', 'OK', 'Warning') | Out-Null
+        return
+    }
+    if ([Windows.Forms.MessageBox]::Show($form, 'Reinstall Risk? This will replace the app files and shortcuts. Your music and settings will be kept.', 'Confirm reinstall', 'YesNo', 'Warning', 'Button2') -ne [Windows.Forms.DialogResult]::Yes) { return }
+
+    try {
+        $install.Enabled = $false
+        $reinstall.Enabled = $false
+        $uninstall.Enabled = $false
+        $browse.Enabled = $false
+        $folder.Enabled = $false
+        $status.Text = 'Removing the current Risk files…'
+        $form.Refresh()
+
+        $prefix = $existingInstall.TrimEnd('\') + '\'
+        Get-Process -Name 'Risk' -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                if ($_.Path -and $_.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                    if ($_.MainWindowHandle -ne 0) { [void]$_.CloseMainWindow() }
+                    if (-not $_.WaitForExit(5000)) { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+                }
+            } catch { }
+        }
+
+        $cleanupScript = Join-Path ([IO.Path]::GetTempPath()) ('RiskReinstall-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+        @'
+param([string]$InstallDirectory, [string]$UninstallKey, [string]$DesktopShortcut, [string]$StartMenuFolder)
+$ErrorActionPreference = 'Stop'
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    try {
+        if (Test-Path -LiteralPath $InstallDirectory) { Remove-Item -LiteralPath $InstallDirectory -Recurse -Force -ErrorAction Stop }
+        if (-not (Test-Path -LiteralPath $InstallDirectory)) { break }
+    } catch {
+        if ($attempt -eq 19) { throw }
+        Start-Sleep -Milliseconds 500
+    }
+}
+if (Test-Path -LiteralPath $InstallDirectory) { throw 'The previous Risk installation is still in use.' }
+Remove-Item -LiteralPath $DesktopShortcut -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $StartMenuFolder -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $UninstallKey -Recurse -Force -ErrorAction SilentlyContinue
+'@ | Set-Content -LiteralPath $cleanupScript -Encoding UTF8
+        $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $cleanupArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $cleanupScript + '" -InstallDirectory "' + $existingInstall + '" -UninstallKey "' + $uninstallKey + '" -DesktopShortcut "' + (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Risk.lnk') + '" -StartMenuFolder "' + (Join-Path ([Environment]::GetFolderPath('Programs')) 'Risk') + '"'
+        $cleanup = Start-Process -FilePath $powershellPath -ArgumentList $cleanupArgs -WorkingDirectory ([IO.Path]::GetTempPath()) -WindowStyle Hidden -Wait -PassThru
+        Remove-Item -LiteralPath $cleanupScript -Force -ErrorAction SilentlyContinue
+        if ($cleanup.ExitCode -ne 0) { throw 'Risk could not remove the previous installation. Close Risk and try again.' }
+        $folder.Text = $existingInstall
+        $install.Text = 'Install'
+        $install.Enabled = $true
+        $status.Text = 'Installing Risk again…'
+        Install-Risk
+    } catch {
+        $status.Text = 'Reinstall could not finish.'
+        $install.Enabled = $true
+        $browse.Enabled = $true
+        $folder.Enabled = $true
+        $uninstall.Enabled = (Test-Path (Join-Path $existingInstall 'Maintenance\uninstall.exe')) -or
+            (Test-Path (Join-Path $existingInstall 'uninstall.exe'))
+        $reinstall.Enabled = $uninstall.Enabled
+        [Windows.Forms.MessageBox]::Show($form, $_.Exception.Message, 'Reinstall Risk', 'OK', 'Error') | Out-Null
+    }
 })
+
+$registeredInstall = (Get-ItemProperty -LiteralPath $uninstallKey -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation
+if (-not $registeredInstall) { $registeredInstall = Get-InstallFolder }
+$reinstall.Enabled = Test-Path (Join-Path $registeredInstall 'App\Risk.exe')
 
 [void]$form.ShowDialog()

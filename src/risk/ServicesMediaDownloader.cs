@@ -1,7 +1,7 @@
 using System.Net.Http;
 using System.Diagnostics;
 
-namespace Vybe.App.Services;
+namespace Risk.App.Services;
 
 public static class MediaDownloader
 {

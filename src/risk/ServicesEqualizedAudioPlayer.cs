@@ -1,14 +1,20 @@
 using Windows.Media.Audio;
 using Windows.Media.Core;
 using Windows.Media.Render;
+using Windows.Foundation;
+using Windows.Media;
+using Windows.Storage;
+using System.Runtime.InteropServices;
+using WinRT;
 
-namespace Vybe.App.Services;
+namespace Risk.App.Services;
 
 public sealed class EqualizedAudioPlayer : IDisposable
 {
     AudioGraph? _graph;
     Task? _initializationTask;
     AudioDeviceOutputNode? _output;
+    AudioFrameOutputNode? _frameOutput;
     MediaSourceAudioInputNode? _input;
     MediaSourceAudioInputNode? _fadingInput;
     EqualizerEffectDefinition? _equalizer;
@@ -21,9 +27,13 @@ public sealed class EqualizedAudioPlayer : IDisposable
     double _fadingNormalizationGain = 1;
     bool _playing;
     int _playGeneration;
+    int _analysisErrorRaised;
+    double[] _visualizerLevels = new double[42];
 
     public event Action? MediaEnded;
     public event Action<string>? PlaybackFailed;
+    public event Action<double[]>? AudioLevelsChanged;
+    public event Action<string>? AudioAnalysisFailed;
 
     public bool IsPlaying => _playing;
     public TimeSpan Position => _input?.Position ?? _pausedPosition;
@@ -64,6 +74,9 @@ public sealed class EqualizedAudioPlayer : IDisposable
 
         _output = outputResult.DeviceOutputNode;
         _equalizer = new EqualizerEffectDefinition(_graph);
+        _frameOutput = _graph.CreateFrameOutputNode();
+        _frameOutput.Start();
+        _graph.QuantumStarted += Graph_QuantumStarted;
     }
 
     public async Task PlayAsync(string sourceUri, bool crossfade = false, TimeSpan? fadeDuration = null,
@@ -92,7 +105,28 @@ public sealed class EqualizedAudioPlayer : IDisposable
 
         try
         {
-            var source = MediaSource.CreateFromUri(new Uri(sourceUri));
+            MediaSource source;
+            if (File.Exists(sourceUri))
+            {
+                // Local imports are filesystem paths, not media URLs. Opening them
+                // as StorageFiles avoids URI parsing failures (especially with
+                // spaces and non-ASCII characters in the path).
+                var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(sourceUri));
+                source = MediaSource.CreateFromStorageFile(file);
+            }
+            else if (Uri.TryCreate(sourceUri, UriKind.Absolute, out var parsedUri) && parsedUri.IsFile)
+            {
+                var file = await StorageFile.GetFileFromPathAsync(parsedUri.LocalPath);
+                source = MediaSource.CreateFromStorageFile(file);
+            }
+            else if (Uri.TryCreate(sourceUri, UriKind.Absolute, out parsedUri))
+            {
+                source = MediaSource.CreateFromUri(parsedUri);
+            }
+            else
+            {
+                throw new FileNotFoundException("The selected audio file could not be found.", sourceUri);
+            }
             var result = await _graph!.CreateMediaSourceAudioInputNodeAsync(source);
             if (result.Status.ToString() != "Success")
                 throw new InvalidOperationException($"Windows could not decode this track ({result.Status}).");
@@ -106,6 +140,7 @@ public sealed class EqualizedAudioPlayer : IDisposable
 
             next.EffectDefinitions.Add(_equalizer!);
             next.AddOutgoingConnection(_output!);
+            if (_frameOutput is not null) next.AddOutgoingConnection(_frameOutput);
             next.MediaSourceCompleted += Input_MediaSourceCompleted;
             _input = next;
             _pausedPosition = TimeSpan.Zero;
@@ -158,6 +193,137 @@ public sealed class EqualizedAudioPlayer : IDisposable
             }
             throw;
         }
+    }
+
+    unsafe void Graph_QuantumStarted(AudioGraph sender, object args)
+    {
+        var output = _frameOutput;
+        if (output is null) return;
+        try
+        {
+            using var frame = output.GetFrame();
+            using var buffer = frame.LockBuffer(AudioBufferAccessMode.Read);
+            using var reference = buffer.CreateReference();
+            // Use C#/WinRT's COM projection helper instead of a direct CLR cast;
+            // IMemoryBufferReference is an IInspectable and the direct cast can
+            // fail in packaged builds even though the native interface is present.
+            var memoryBuffer = reference.As<IMemoryBufferByteAccess>();
+            memoryBuffer.GetBuffer(out var bytes, out var capacity);
+            var samples = (float*)bytes;
+            var sampleCount = (int)(capacity / sizeof(float));
+            if (sampleCount <= 0) return;
+
+            var levels = AnalyzeSpectrum(samples, sampleCount, _visualizerLevels.Length);
+            Volatile.Write(ref _visualizerLevels, levels);
+            Interlocked.Exchange(ref _analysisErrorRaised, 0);
+            AudioLevelsChanged?.Invoke(levels);
+        }
+        catch (Exception ex)
+        {
+            // Keep analysis failures visible while playback continues. Previously
+            // these were swallowed, leaving a permanently motionless visualizer.
+            if (Interlocked.Exchange(ref _analysisErrorRaised, 1) == 0)
+                AudioAnalysisFailed?.Invoke(ex.Message);
+        }
+    }
+
+    static unsafe double[] AnalyzeSpectrum(float* samples, int sampleCount, int bandCount)
+    {
+        var fftSize = 1;
+        while (fftSize < sampleCount && fftSize < 2048) fftSize <<= 1;
+        if (fftSize > sampleCount) fftSize >>= 1;
+        if (fftSize < 128) return new double[bandCount];
+
+        var real = new double[fftSize];
+        var imaginary = new double[fftSize];
+        for (var i = 0; i < fftSize; i++)
+        {
+            var hann = 0.5 - 0.5 * Math.Cos(2 * Math.PI * i / (fftSize - 1));
+            real[i] = samples[i] * hann;
+        }
+
+        // In-place radix-2 FFT of the captured playback frame.
+        for (int i = 1, j = 0; i < fftSize; i++)
+        {
+            var bit = fftSize >> 1;
+            for (; (j & bit) != 0; bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) (real[i], real[j]) = (real[j], real[i]);
+        }
+        for (var length = 2; length <= fftSize; length <<= 1)
+        {
+            var angle = -2 * Math.PI / length;
+            var stepReal = Math.Cos(angle);
+            var stepImaginary = Math.Sin(angle);
+            for (var offset = 0; offset < fftSize; offset += length)
+            {
+                var twiddleReal = 1.0;
+                var twiddleImaginary = 0.0;
+                var half = length >> 1;
+                for (var k = 0; k < half; k++)
+                {
+                    var even = offset + k;
+                    var odd = even + half;
+                    var oddReal = real[odd] * twiddleReal - imaginary[odd] * twiddleImaginary;
+                    var oddImaginary = real[odd] * twiddleImaginary + imaginary[odd] * twiddleReal;
+                    real[odd] = real[even] - oddReal;
+                    imaginary[odd] = imaginary[even] - oddImaginary;
+                    real[even] += oddReal;
+                    imaginary[even] += oddImaginary;
+                    (twiddleReal, twiddleImaginary) =
+                        (twiddleReal * stepReal - twiddleImaginary * stepImaginary,
+                         twiddleReal * stepImaginary + twiddleImaginary * stepReal);
+                }
+            }
+        }
+
+        var levels = new double[bandCount];
+        var maxBin = fftSize / 2;
+        for (var band = 0; band < bandCount; band++)
+        {
+            var low = Math.Max(1, (int)Math.Floor(Math.Pow(maxBin, band / (double)bandCount)));
+            var high = Math.Max(low + 1, (int)Math.Floor(Math.Pow(maxBin, (band + 1.0) / bandCount)));
+            high = Math.Min(maxBin, high);
+            var energy = 0.0;
+            var count = 0;
+            for (var bin = low; bin < high; bin++)
+            {
+                energy += real[bin] * real[bin] + imaginary[bin] * imaginary[bin];
+                count++;
+            }
+            var magnitude = Math.Sqrt(energy / Math.Max(1, count)) * (2.0 / fftSize);
+            var decibels = 20 * Math.Log10(Math.Max(magnitude, 0.000003));
+            // Music is often quiet after the output/normalization gain. Use a
+            // wider range so normal track levels remain visible without faking
+            // movement when the captured audio is silent.
+            levels[band] = Math.Clamp((decibels + 90) / 66, 0, 1);
+        }
+
+        // A few decoders deliver very short or unusually quiet frames. Preserve
+        // movement from the captured audio itself in that case, rather than
+        // leaving every bar pinned at its minimum height.
+        if (levels.Max() < 0.025)
+        {
+            var sumSquares = 0.0;
+            for (var i = 0; i < sampleCount; i++) sumSquares += samples[i] * samples[i];
+            var rms = Math.Sqrt(sumSquares / sampleCount);
+            var envelope = Math.Clamp((20 * Math.Log10(Math.Max(rms, 0.00001)) + 78) / 60, 0, 1);
+            if (envelope > 0.015)
+                for (var band = 0; band < bandCount; band++) levels[band] = envelope;
+        }
+        return levels;
+    }
+
+    [ComImport]
+    [Guid("5B0D3235-4DBA-4D44-865E-8F1D0E4FD04D")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [System.Reflection.Obfuscation(Exclude = true, ApplyToMembers = true)]
+    // Keep this interop contract public so the installer obfuscator preserves
+    // its identity; WinRT's COM query cannot cast the frame buffer to a renamed
+    // private interface in the packaged application.
+    public unsafe interface IMemoryBufferByteAccess
+    {
+        void GetBuffer(out byte* buffer, out uint capacity);
     }
 
     async Task RunCrossfadeAsync(MediaSourceAudioInputNode outgoing, MediaSourceAudioInputNode incoming,
@@ -294,6 +460,7 @@ public sealed class EqualizedAudioPlayer : IDisposable
         DisposeNode(_fadingInput);
         _input = _fadingInput = null;
         _output?.Dispose();
+        _frameOutput?.Dispose();
         _graph?.Dispose();
     }
 }

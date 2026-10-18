@@ -8,7 +8,7 @@ Risk is a Windows desktop music player built with .NET 8 and WinUI.
 - Import playlists from SoundCloud, YouTube Music, and public Spotify playlist links.
 - Spotify playlist imports use Spotify's public embed data and include up to 50 tracks. The tracks are matched to YouTube Music versions when played; private Spotify playlists are not available.
 - The download folder defaults to `%USERPROFILE%\Music\Risk` and can be changed in Settings.
-- Settings and playlists are stored under `%LOCALAPPDATA%\VYBE`.
+- Settings and playlists are stored under `%LOCALAPPDATA%\Risk`; existing `%LOCALAPPDATA%\VYBE` data is migrated on first launch.
 
 ## Build the installer
 

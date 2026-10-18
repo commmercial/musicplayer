@@ -4,7 +4,7 @@ using YouTubeMusicAPI.Models.Info;
 using YouTubeMusicAPI.Models.Search;
 using YouTubeMusicAPI.Models.Streaming;
 
-namespace Vybe.App.Services;
+namespace Risk.App.Services;
 
 public sealed class YouTubeMusicService
 {
@@ -77,7 +77,7 @@ public sealed class YouTubeMusicService
         ResolvedAt = track.ResolvedAt
     };
 
-    public async Task<(string Name, List<TrackItem> Tracks)> GetArtistTracksAsync(
+    public async Task<(string Name, string AvatarUrl, string BannerUrl, List<TrackItem> Tracks)> GetArtistTracksAsync(
         string artistId, CancellationToken ct = default)
     {
         var artist = await _client.GetArtistInfoAsync(artistId, ct);
@@ -93,7 +93,25 @@ public sealed class YouTubeMusicService
             IsOnline = true,
             ArtworkUrl = Largest(song.Thumbnails)
         }).ToList();
-        return (artist.Name, tracks);
+        return (artist.Name, Largest(artist.Thumbnails), "", tracks);
+    }
+
+    public async Task<(string Name, string AvatarUrl, string BannerUrl, List<TrackItem> Tracks)> FindArtistAsync(
+        string artistName, CancellationToken ct = default)
+    {
+        var page = _client.SearchAsync(artistName, SearchCategory.Artists);
+        var items = await page.FetchItemsAsync(0, 20, ct).ConfigureAwait(false);
+        var artists = items.OfType<ArtistSearchResult>().ToList();
+        if (artists.Count == 0) throw new InvalidOperationException("No matching artist profile was found.");
+
+        static string Normalize(string value) => System.Text.RegularExpressions.Regex.Replace(
+            value.ToLowerInvariant(), @"[^\p{L}\p{N}]+", " ").Trim();
+        var query = Normalize(artistName);
+        var match = artists
+            .OrderByDescending(candidate => Normalize(candidate.Name) == query)
+            .ThenByDescending(candidate => Normalize(candidate.Name).StartsWith(query, StringComparison.Ordinal))
+            .First();
+        return await GetArtistTracksAsync(match.Id, ct).ConfigureAwait(false);
     }
 
     public async Task<(string Name, string Description, string ArtworkUrl, List<TrackItem> Tracks)> GetPlaylistAsync(
@@ -101,7 +119,7 @@ public sealed class YouTubeMusicService
     {
         var match = System.Text.RegularExpressions.Regex.Match(playlistUrl, @"[?&]list=([A-Za-z0-9_-]+)");
         var id = match.Success ? match.Groups[1].Value : playlistUrl.Trim().TrimEnd('/').Split('/').Last();
-        if (id.Length == 0) throw new InvalidOperationException("Could not find a YouTube Music playlist ID in that link.");
+        if (id.Length == 0) throw new InvalidOperationException("Could not find a supported playlist ID in that link.");
 
         var browseId = _client.GetCommunityPlaylistBrowseId(id);
         var info = await _client.GetCommunityPlaylistInfoAsync(browseId, ct);

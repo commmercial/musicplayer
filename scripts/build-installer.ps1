@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repo 'artifacts'))
-$project = Join-Path $repo 'src\risk\Vybe.App.csproj'
+$project = Join-Path $repo 'src\risk\Risk.csproj'
 $publish = Join-Path $artifactRoot 'publish'
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -36,7 +36,7 @@ if (-not (Test-Path -LiteralPath $obfuscatorCommand)) {
         Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/obfuscar.globaltool/2.2.50/obfuscar.globaltool.2.2.50.nupkg' `
             -OutFile $obfuscatorPackage -UseBasicParsing
     }
-    & dotnet tool install --tool-path $obfuscatorInstallDir Obfuscar.GlobalTool --version 2.2.50 --source $obfuscatorToolDir
+    & dotnet tool install --tool-path $obfuscatorInstallDir Obfuscar.GlobalTool --version 2.2.50 --add-source $obfuscatorToolDir
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $obfuscatorCommand)) {
         throw 'Could not install the pinned Obfuscar tool required to protect the app assembly.'
     }
@@ -85,15 +85,23 @@ try {
     }
 
     $appStage = Join-Path $stage 'App'
-    $runtimeStage = Join-Path $appStage 'src\risk'
-    New-Item -ItemType Directory -Force -Path $runtimeStage | Out-Null
+    $runtimeStage = Join-Path $stage 'Runtime'
+    $assetsStage = Join-Path $stage 'Assets'
+    $maintenanceStage = Join-Path $stage 'Maintenance'
+    New-Item -ItemType Directory -Force -Path $appStage,$runtimeStage,$assetsStage,$maintenanceStage | Out-Null
     Get-ChildItem -LiteralPath $publish -Force | Copy-Item -Destination $runtimeStage -Recurse -Force
+
+    $runtimeAssets = Join-Path $runtimeStage 'Assets'
+    if (Test-Path -LiteralPath $runtimeAssets) {
+        Get-ChildItem -LiteralPath $runtimeAssets -Force | Copy-Item -Destination $assetsStage -Recurse -Force
+        Remove-Item -LiteralPath $runtimeAssets -Recurse -Force
+    }
     & $csc /nologo /target:winexe "/out:$(Join-Path $appStage 'Risk.exe')" "/win32icon:$icon" `
         /reference:System.Windows.Forms.dll $launcher
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $appStage 'Risk.exe'))) {
         throw "Could not compile the Risk launcher (exit code $LASTEXITCODE)."
     }
-    Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $stage 'uninstall.exe') -Force
+    Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $maintenanceStage 'uninstall.exe') -Force
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory(
         $stage, $payload, [IO.Compression.CompressionLevel]::Optimal, $false)

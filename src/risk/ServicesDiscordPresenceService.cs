@@ -3,7 +3,7 @@ using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 
-namespace Vybe.App.Services;
+namespace Risk.App.Services;
 
 /// <summary>Publishes listening activity to the Discord desktop client over local RPC.</summary>
 public sealed class DiscordPresenceService : IDisposable
@@ -28,7 +28,8 @@ public sealed class DiscordPresenceService : IDisposable
         finally { _gate.Release(); }
     }
 
-    public async Task UpdateAsync(string applicationId, string title, string artist, string artworkUrl, TimeSpan duration, TimeSpan position)
+    public async Task UpdateAsync(string applicationId, string title, string artist, string artworkUrl,
+        string trackUrl, string artistUrl, TimeSpan duration, TimeSpan position)
     {
         if (!ulong.TryParse(applicationId, out _)) throw new InvalidOperationException("Invalid Discord application ID.");
         await _gate.WaitAsync();
@@ -48,17 +49,33 @@ public sealed class DiscordPresenceService : IDisposable
                 ["state"] = Clip(string.IsNullOrWhiteSpace(artist) ? "Listening to music" : artist, 128),
                 ["timestamps"] = timestamps
             };
+            var buttons = new List<Dictionary<string, string>>();
+            if (IsWebUrl(trackUrl))
+                buttons.Add(new Dictionary<string, string>
+                {
+                    ["label"] = "Listen Along",
+                    ["url"] = trackUrl
+                });
+            if (IsWebUrl(artistUrl))
+                buttons.Add(new Dictionary<string, string>
+                {
+                    ["label"] = "View Artist",
+                    ["url"] = artistUrl
+                });
+            if (buttons.Count > 0) activity["buttons"] = buttons;
             if (Uri.TryCreate(artworkUrl, UriKind.Absolute, out var artwork) &&
                 (artwork.Scheme == Uri.UriSchemeHttps || artwork.Scheme == Uri.UriSchemeHttp))
                 activity["assets"] = new Dictionary<string, string>
                 {
-                    ["large_image"] = Clip(artwork.AbsoluteUri, 300)
+                    ["large_image"] = Clip(artwork.AbsoluteUri, 300),
+                    ["large_text"] = "Download Risk!",
+                    ["large_url"] = "https://github.com/commmercial/musicplayer"
                 };
 
-            using var response = await SendCommandAsync("SET_ACTIVITY", new
+            using var response = await SendCommandAsync("SET_ACTIVITY", new Dictionary<string, object?>
             {
-                pid = Environment.ProcessId,
-                activity
+                ["pid"] = Environment.ProcessId,
+                ["activity"] = activity
             });
         }
         catch
@@ -69,6 +86,9 @@ public sealed class DiscordPresenceService : IDisposable
         finally { _gate.Release(); }
     }
 
+    static bool IsWebUrl(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
+
     public async Task ClearAsync()
     {
         await _gate.WaitAsync();
@@ -76,10 +96,10 @@ public sealed class DiscordPresenceService : IDisposable
         {
             if (_pipe?.IsConnected == true)
             {
-                using var response = await SendCommandAsync("SET_ACTIVITY", new
+                using var response = await SendCommandAsync("SET_ACTIVITY", new Dictionary<string, object?>
                 {
-                    pid = Environment.ProcessId,
-                    activity = (object?)null
+                    ["pid"] = Environment.ProcessId,
+                    ["activity"] = null
                 });
             }
         }
@@ -96,10 +116,10 @@ public sealed class DiscordPresenceService : IDisposable
             {
                 try
                 {
-                    using var response = await SendCommandAsync("SET_ACTIVITY", new
+                    using var response = await SendCommandAsync("SET_ACTIVITY", new Dictionary<string, object?>
                     {
-                        pid = Environment.ProcessId,
-                        activity = (object?)null
+                        ["pid"] = Environment.ProcessId,
+                        ["activity"] = null
                     });
                 }
                 catch { }
@@ -115,15 +135,24 @@ public sealed class DiscordPresenceService : IDisposable
         if (_pipe?.IsConnected == true && _applicationId == appId) return;
         await DisconnectPipeAsync();
         Exception? last = null;
+        string? connectedPipe = null;
         for (var i = 0; i < 10; i++)
         {
             var candidate = new NamedPipeClientStream(".", $"discord-ipc-{i}", PipeDirection.InOut, PipeOptions.Asynchronous);
+            var connected = false;
             try
             {
                 await candidate.ConnectAsync(500);
+                connected = true;
+                connectedPipe = $"discord-ipc-{i}";
                 _pipe = candidate;
                 _applicationId = appId;
-                await WriteFrameAsync(0, JsonSerializer.SerializeToUtf8Bytes(new { v = 1, client_id = appId }));
+                var handshake = new Dictionary<string, object?>
+                {
+                    ["v"] = 1,
+                    ["client_id"] = appId
+                };
+                await WriteFrameAsync(0, JsonSerializer.SerializeToUtf8Bytes(handshake));
                 var ready = await ReadFrameAsync(candidate, TimeSpan.FromSeconds(3));
                 using var document = JsonDocument.Parse(ready.Payload);
                 if (document.RootElement.TryGetProperty("evt", out var evt) && evt.GetString() == "ERROR")
@@ -137,16 +166,33 @@ public sealed class DiscordPresenceService : IDisposable
                 last = ex;
                 candidate.Dispose();
                 _pipe = null;
+                // Once a pipe has accepted the connection, a handshake failure is
+                // more useful than trying later pipe numbers and reporting their
+                // expected connect timeouts instead.
+                if (connected) break;
             }
         }
-        throw new IOException("Could not connect to Discord Desktop. Open the Discord app and try again.", last);
+        var detail = last is null
+            ? "No Discord IPC pipe was available."
+            : connectedPipe is not null
+                ? $"Connected to {connectedPipe}, but its handshake failed: {last.GetType().Name}: {last.Message}"
+                : $"No pipe accepted the connection: {last.GetType().Name}: {last.Message}";
+        throw new IOException(
+            "Could not connect to Discord Desktop. Open Discord and retry. Details: " + detail,
+            last);
     }
 
     async Task<JsonDocument> SendCommandAsync(string command, object args)
     {
         var pipe = _pipe ?? throw new IOException("Discord is not connected.");
         var nonce = Guid.NewGuid().ToString("N");
-        await WriteFrameAsync(1, JsonSerializer.SerializeToUtf8Bytes(new { cmd = command, args, nonce }));
+        var request = new Dictionary<string, object?>
+        {
+            ["cmd"] = command,
+            ["args"] = args,
+            ["nonce"] = nonce
+        };
+        await WriteFrameAsync(1, JsonSerializer.SerializeToUtf8Bytes(request));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
         while (true)
         {

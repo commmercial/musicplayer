@@ -5,7 +5,7 @@ using System.Collections.Specialized;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 
-namespace Vybe.App;
+namespace Risk.App;
 
 public sealed class RangeObservableCollection<T> : ObservableCollection<T>
 {
@@ -31,6 +31,8 @@ public sealed class TrackItem : INotifyPropertyChanged
     public string Subtitle { get; set; } = "";
     public string Path { get; set; } = "";          // local file path, or resolved stream URL
     public string Source { get; set; } = "LOCAL";   // LOCAL | YT MUSIC | SOUNDCLOUD
+    [JsonIgnore]
+    public string DisplaySource => string.Equals(Source, "YT MUSIC", StringComparison.OrdinalIgnoreCase) ? "" : Source;
     public string DurationLabel { get; set; } = "";
     public string WebUrl { get; set; } = "";
     public string Id { get; set; } = "";            // YouTube video id, or SoundCloud permalink
@@ -51,6 +53,13 @@ public sealed class TrackItem : INotifyPropertyChanged
     }
     public string ArtworkUrl { get; set; } = "";
     public DateTimeOffset ResolvedAt { get; set; }
+
+    // Search-only popularity signals. SoundCloud exposes these in its public search
+    // payload; they are not persisted in playlists or settings.
+    [JsonIgnore]
+    public long SearchPlayCount { get; set; }
+    [JsonIgnore]
+    public long SearchArtistFollowers { get; set; }
 
     public bool IsStreamFresh => ResolvedAt != default && DateTimeOffset.UtcNow - ResolvedAt < TimeSpan.FromHours(2);
 

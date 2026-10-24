@@ -59,7 +59,7 @@ public sealed class DiscordPresenceService : IDisposable
             if (IsWebUrl(artistUrl))
                 buttons.Add(new Dictionary<string, string>
                 {
-                    ["label"] = "View Artist",
+                    ["label"] = "Artist",
                     ["url"] = artistUrl
                 });
             if (buttons.Count > 0) activity["buttons"] = buttons;
